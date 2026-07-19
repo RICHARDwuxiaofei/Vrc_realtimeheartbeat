@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-feature android:name="android.hardware.type.watch" android:required="false" />
+
+    <application
+        android:name=".mobile.PhoneRelayApplication"
+        android:allowBackup="false"
+        android:label="心率中转站"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HeartRateRelay">
+
+        <activity
+            android:name=".mobile.MobileMainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".mobile.PhoneRelayListenerService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.BIND_LISTENER" />
+                <data
+                    android:host="*"
+                    android:pathPrefix="/hr/sample"
+                    android:scheme="wear" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

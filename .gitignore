@@ -1,0 +1,26 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+app/build/
+mobile/build/
+
+# Local device test output and machine-specific reports
+test-results/
+EXECUTION_REPORT.md
+SECOND_STAGE_TEST_REPORT.md
+*.log
+*.apk
+*.aab
+
+# Signing material and local secrets
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+.env
+.env.*
