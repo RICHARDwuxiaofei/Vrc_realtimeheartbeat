@@ -24,3 +24,7 @@ keystore.properties
 signing.properties
 .env
 .env.*
+
+# Locally assembled distribution bundles
+dist/
+*.zip

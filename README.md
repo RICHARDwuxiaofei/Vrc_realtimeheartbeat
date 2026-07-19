@@ -1,5 +1,7 @@
 # Vrc_realtimeheartbeat
 
+[![Build distributables](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/actions/workflows/build.yml/badge.svg)](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/actions/workflows/build.yml)
+
 Samsung Galaxy Watch6 心率采集与 VRChat OSC 中转项目。包含三个可独立运行的组件：
 
 - `app`：Wear OS 应用，保留 `MeasureClient` 探针和由健康类型 `ForegroundService` 持有的 `ExerciseClient` 测试；真实样本通过 Wear OS Data Layer 发往附近手机。
@@ -72,3 +74,22 @@ $adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
 5. 真正测量时启动手表的 Exercise 模式；手机会自动转发每个有效样本。
 
 电脑程序输出 `/avatar/parameters/HeartRate`（Int）、`HeartRateNormalized`（Float）和 `HeartRateValid`（Bool）。超过 10 秒没有真实数据时，`HeartRateValid` 自动变为 false。
+
+## GitHub 云端构建
+
+仓库中的 `Build distributables` GitHub Actions 工作流会在 Pull Request、`main` 更新和手动触发时运行：
+
+- 用 Gradle Wrapper 构建 Wear OS `watch-debug.apk`；
+- 用同一次任务构建 Android `phone-debug.apk`，确保两端 Debug 签名匹配；
+- 在 Windows Runner 上执行电脑桥接器协议自检并打包 ZIP；
+- 为下载文件生成 `SHA256SUMS.txt`；
+- 将 Android 和 Windows 输出保存为14天的 Workflow Artifacts。
+
+在 GitHub 仓库打开 **Actions → Build distributables → 对应运行 → Artifacts** 即可下载。
+
+### Artifact 与 Release 的区别
+
+- **Artifact** 属于某一次 Actions 运行，主要用于测试和验证，当前设置保留14天。
+- **Release** 绑定一个 Git 标签（例如 `v1.0.0`），是面向使用者的长期版本页面；Release 本身不负责编译，通常发布 Actions 已验证的文件。
+- 当前 Android 云端产物是 Debug APK。同一次运行的手机与手表 APK 可以互通，但不同运行的临时 Debug 签名不适合作为长期覆盖升级方案。
+- 正式 Release APK 应使用一把稳定、离线备份且通过 GitHub Secrets 提供的发布签名密钥。Windows ZIP 不需要代码签名即可运行，但正式分发仍可另加 Authenticode 签名。
