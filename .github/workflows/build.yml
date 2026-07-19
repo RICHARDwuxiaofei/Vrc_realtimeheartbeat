@@ -1,0 +1,93 @@
+name: Build distributables
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android phone and watch APKs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-36.1" "build-tools;36.0.0"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Build phone and watch APKs
+        run: ./gradlew :app:assembleDebug :mobile:assembleDebug --no-daemon
+
+      - name: Prepare Android downloads
+        shell: bash
+        run: |
+          mkdir -p dist/android
+          cp app/build/outputs/apk/debug/app-debug.apk dist/android/Vrc_realtimeheartbeat-watch-debug.apk
+          cp mobile/build/outputs/apk/debug/mobile-debug.apk dist/android/Vrc_realtimeheartbeat-phone-debug.apk
+          cd dist/android
+          sha256sum *.apk > SHA256SUMS.txt
+
+      - name: Upload Android APKs
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-debug-apks
+          path: dist/android/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows bridge package
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Run bridge protocol self-test
+        shell: powershell
+        run: .\pc-bridge\HeartRateBridge.ps1 -SelfTest
+
+      - name: Package Windows bridge
+        shell: powershell
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'Vrc_realtimeheartbeat-windows'
+          $output = Join-Path $env:GITHUB_WORKSPACE 'dist\windows'
+          New-Item -ItemType Directory -Path $stage, $output -Force | Out-Null
+          Copy-Item '.\pc-bridge\*' $stage -Recurse
+          $zip = Join-Path $output 'Vrc_realtimeheartbeat-windows.zip'
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Vrc_realtimeheartbeat-windows.zip" | Set-Content (Join-Path $output 'SHA256SUMS.txt')
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-heart-rate-bridge
+          path: dist/windows/
+          if-no-files-found: error
+          retention-days: 14
