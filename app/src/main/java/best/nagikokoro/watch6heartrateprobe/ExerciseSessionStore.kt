@@ -37,6 +37,7 @@ data class ExerciseSessionSnapshot(
     val lastError: String = "--",
     val activityPhase: String = "PROCESS_START",
     val screenInteractive: Boolean = true,
+    val relayMode: WatchRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS,
 )
 
 class ExerciseSessionStore private constructor(context: Context) {
@@ -77,6 +78,7 @@ class ExerciseSessionStore private constructor(context: Context) {
         lastError = preferences.getString("lastError", "--") ?: "--",
         activityPhase = preferences.getString("activityPhase", "PROCESS_START") ?: "PROCESS_START",
         screenInteractive = preferences.getBoolean("screenInteractive", true),
+        relayMode = WatchRelayMode.fromStoredValue(preferences.getString("relayMode", null)),
     )
 
     private fun persist(value: ExerciseSessionSnapshot) {
@@ -100,6 +102,7 @@ class ExerciseSessionStore private constructor(context: Context) {
             putString("lastError", value.lastError)
             putString("activityPhase", value.activityPhase)
             putBoolean("screenInteractive", value.screenInteractive)
+            putString("relayMode", value.relayMode.name)
         }
     }
 

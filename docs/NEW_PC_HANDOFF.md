@@ -51,11 +51,11 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 同一份源码产生两个 APK：
 
 - `diagnosticDebug`：测试版，保留 MeasureClient 探针、息屏/续航测试、原始事件、统计报告和链路诊断。
-- `productionDebug`：日常正式版，固定使用 ExerciseClient，只显示 BPM、后台状态、手机、样本年龄、电量以及开始/停止。
+- `productionDebug`：日常正式版，固定使用 ExerciseClient，并提供“1 秒实时 / 5 秒省电”两个启动前可选档位。
 
 两版为了和手机 Wear Data Layer 通信，必须使用同一个 applicationId 和签名。因此不能在同一块手表上同时安装；互相覆盖就是升级或回退。当前“正式版”是功能正式版，仍为 debug 签名，不是商店发布签名。
 
-正式版已做低功耗隔离：不含 `WAKE_LOCK` 权限，编译期也禁止进入高耗电实时交付诊断路径。
+正式版默认使用 5 秒省电档；只有用户明确选择 1 秒实时档时才注册约 1 Hz 直接心率传感器并使用有界滚动 `PARTIAL_WAKE_LOCK`。停止、异常、服务销毁和 Exercise 外部结束都会释放该锁。
 
 ### 手机端 `mobile/`
 
@@ -237,13 +237,13 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 - 20 分钟佩戴低功耗测试：1194 个真实样本，最大采样间隔 2005 ms，息屏交付 P95 4056 ms，最长无 callback 6016 ms，无 WakeLock、服务重启、错误或崩溃。
 - 修复 4990–4999 ms 批次被严格 5000 ms 节流跳过的问题。
 - 移除 Watch/Phone 重复 Data Layer runtime listener。
-- 正式版 Watch APK 已在 SM-R960 安装并真机检查入口、界面、按钮和无 WakeLock 权限。
+- 旧正式版 Watch APK 已在 SM-R960 真机验证 5 秒省电链路；新增的 1 秒/5 秒选择尚未安装到设备验证。
 - Python Windows GUI、UDP ACK、OSC、超时、三位数拆分和 HRPulse。
 
 换机后按顺序继续：
 
-1. 记录当前正式版 5–10 分钟息屏冒烟测试结果：电脑是否持续更新、返回表盘是否继续、是否出现断线。
-2. 做正常佩戴至少 60 分钟正式续航测试，记录开始/结束电量、发送间隔、手机/电脑断档。
+1. 分别对 1 秒实时档和 5 秒省电档做 5–10 分钟息屏冒烟测试，确认手表、手机、电脑显示的频率一致。
+2. 两个档位分别做正常佩戴至少 60 分钟测试，记录开始/结束电量、发送间隔、手机/电脑断档。
 3. 在 VRChat 中实收 `HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`、`HRValid`、`HRPulse`。
 4. 决定是否仍要继续最初的 Watch BLE GATT 直连电脑阶段；这部分尚未开始。
 5. 正式发布前配置稳定的 Android release signing；当前 APK 是 debug 签名。
@@ -252,7 +252,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 
 - 不要回到 MeasureClient 作为最终方案；它息屏后停止供数。
 - 不要重新证明 ExerciseClient 能否息屏采样；这已经真机验证。
-- 不要在正式版恢复长期 WakeLock 或直接传感器注册。
+- 不要把 1 秒实时档改成无界 WakeLock；它必须保持用户显式选择、有界续租并覆盖所有释放路径。
 - 不要删除测试版、报告记录器、Python 版或旧 C# 回退版。
 - 不要用 callback 接收时间代替 `sampleEpochMillis` 判断真实采样连续性。
 - 不要把链路测试包或固定 72 BPM 当成真实心率。

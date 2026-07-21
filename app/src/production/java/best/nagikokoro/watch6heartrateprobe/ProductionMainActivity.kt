@@ -42,6 +42,7 @@ import androidx.wear.compose.material3.Text
 class ProductionMainActivity : ComponentActivity() {
     private val viewModel: HeartRateViewModel by viewModels()
     private lateinit var permissionManager: PermissionManager
+    private lateinit var relaySettings: WatchRelaySettings
     private var pendingStartAfterPermission = false
     private var restoreChecked = false
 
@@ -66,6 +67,7 @@ class ProductionMainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         permissionManager = PermissionManager(this)
+        relaySettings = WatchRelaySettings.get(this)
         viewModel.selectMode(ProbeMode.EXERCISE)
         viewModel.onActivityLifecycle(
             "CREATE_PRODUCTION",
@@ -76,9 +78,12 @@ class ProductionMainActivity : ComponentActivity() {
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
             val relayStatus by RelayStatusStore.state.collectAsStateWithLifecycle()
+            val selectedRelayMode by relaySettings.mode.collectAsStateWithLifecycle()
             ProductionScreen(
                 state = state,
                 relayStatus = relayStatus,
+                selectedRelayMode = selectedRelayMode,
+                onRelayModeChange = relaySettings::setMode,
                 onStart = ::requestPermissionsAndStart,
                 onStop = viewModel::stopSelectedMode,
             )
@@ -160,6 +165,8 @@ class ProductionMainActivity : ComponentActivity() {
 private fun ProductionScreen(
     state: ProbeUiState,
     relayStatus: RelayStatus,
+    selectedRelayMode: WatchRelayMode,
+    onRelayModeChange: (WatchRelayMode) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -179,6 +186,7 @@ private fun ProductionScreen(
         null
     }
     val signalFresh = running && bpm != null && ageSeconds != null && ageSeconds < 10L
+    val displayedRelayMode = if (running) exercise.relayMode else selectedRelayMode
     val statusText = when {
         !running -> "尚未启动"
         bpm == null -> "正在等待心率"
@@ -246,6 +254,13 @@ private fun ProductionScreen(
         }
 
         Spacer(Modifier.height(12.dp))
+        RelayModeSelector(
+            selectedMode = displayedRelayMode,
+            enabled = !running,
+            onModeChange = onRelayModeChange,
+        )
+
+        Spacer(Modifier.height(12.dp))
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -262,6 +277,7 @@ private fun ProductionScreen(
                     "数据",
                     ageSeconds?.let { "$it 秒前" } ?: "--",
                 )
+                ProductionStatusRow("频率", displayedRelayMode.displayName)
                 ProductionStatusRow(
                     "电量",
                     exercise.currentBatteryPercent?.let { "$it%" } ?: "--",
@@ -295,6 +311,57 @@ private fun ProductionScreen(
             fontSize = 9.sp,
             textAlign = TextAlign.Center,
         )
+    }
+}
+
+@Composable
+private fun RelayModeSelector(
+    selectedMode: WatchRelayMode,
+    enabled: Boolean,
+    onModeChange: (WatchRelayMode) -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF101010))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("发送频率", color = Color(0xFFE6E1E5), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                WatchRelayMode.entries.forEach { mode ->
+                    val selected = selectedMode == mode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(38.dp)
+                            .clip(RoundedCornerShape(19.dp))
+                            .background(if (selected) Color(0xFFD84A57) else Color(0xFF242424))
+                            .clickable(enabled = enabled) { onModeChange(mode) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (mode == WatchRelayMode.REALTIME_1_SECOND) "1 秒" else "5 秒",
+                            color = if (selected) Color.White else Color(0xFFBDBDBD),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+            Text(
+                if (enabled) selectedMode.description else "运行中不可切换，请先停止传输",
+                color = if (selectedMode == WatchRelayMode.REALTIME_1_SECOND) Color(0xFFE7A84B) else Color(0xFF858585),
+                fontSize = 8.sp,
+                lineHeight = 11.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
