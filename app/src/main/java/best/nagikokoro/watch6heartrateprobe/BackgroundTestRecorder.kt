@@ -15,14 +15,20 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.ceil
 
-enum class BackgroundTestType(val displayName: String, val durationMillis: Long) {
-    SCREEN_OFF_10_MIN("10-minute screen-off delivery test", 10 * 60_000L),
-    BATTERY_20_MIN("20-minute battery test", 20 * 60_000L),
+enum class BackgroundTestType(
+    val displayName: String,
+    val durationMillis: Long,
+    val requiresDeliveryWakeLock: Boolean = false,
+) {
+    SCREEN_OFF_10_MIN("10 分钟息屏交付测试", 10 * 60_000L),
+    REALTIME_DELIVERY_10_MIN("10 分钟实时交付实验", 10 * 60_000L, requiresDeliveryWakeLock = true),
+    BATTERY_20_MIN("20 分钟快速续航测试", 20 * 60_000L),
+    FORMAL_60_MIN("60 分钟正式续航测试", 60 * 60_000L),
 }
 
-enum class WearScenario {
-    OFF_WRIST_BASELINE,
-    ON_WRIST_REAL_USE,
+enum class WearScenario(val displayName: String) {
+    OFF_WRIST_BASELINE("未佩戴基线"),
+    ON_WRIST_REAL_USE("正常佩戴"),
 }
 
 enum class BackgroundTestState {
@@ -34,17 +40,25 @@ enum class BackgroundTestState {
     ABNORMAL_TERMINATION,
 }
 
+enum class BackgroundTestTickResult {
+    COMPLETE,
+    DRAIN_TIMEOUT,
+}
+
 data class BackgroundTestSnapshot(
     val state: BackgroundTestState = BackgroundTestState.IDLE,
     val sessionId: String = "--",
     val testType: String = "--",
-    val scenario: WearScenario = WearScenario.OFF_WRIST_BASELINE,
+    val scenario: WearScenario = WearScenario.ON_WRIST_REAL_USE,
     val startMillis: Long? = null,
     val targetEndMillis: Long? = null,
+    val targetReachedMillis: Long? = null,
     val endMillis: Long? = null,
     val startBatteryPercent: Int? = null,
     val currentBatteryPercent: Int? = null,
+    val targetEndBatteryPercent: Int? = null,
     val startCharging: Boolean? = null,
+    val targetEndCharging: Boolean? = null,
     val startWorn: Boolean? = null,
     val totalSamples: Long = 0,
     val callbackBatchCount: Long = 0,
@@ -56,9 +70,11 @@ data class BackgroundTestSnapshot(
     val processRestartCount: Long = 0,
     val screenOnCount: Long = 0,
     val screenOffCount: Long = 0,
+    val lastScreenOnMillis: Long? = null,
     val errorCount: Long = 0,
     val crashCount: Long = 0,
     val lastCallbackReceiveMillis: Long? = null,
+    val latestSampleEpochMillis: Long? = null,
     val longestNoCallbackDurationMs: Long = 0,
     val latestReportJsonPath: String = "--",
     val latestReportTextPath: String = "--",
@@ -66,6 +82,7 @@ data class BackgroundTestSnapshot(
     val warning: String = "--",
 ) {
     val isActive: Boolean get() = state == BackgroundTestState.ACTIVE
+    val isDraining: Boolean get() = isActive && targetReachedMillis != null
 }
 
 data class RecordedHeartRatePoint(
@@ -87,21 +104,34 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
         exercise: ExerciseSessionSnapshot,
         charging: Boolean?,
     ): Result<BackgroundTestSnapshot> = runCatching {
-        check(!_state.value.isActive) { "A background test is already active" }
-        check(exercise.serviceRunning) { "ForegroundService is not running" }
-        check(exercise.sessionState == ExerciseSessionState.ACTIVE) { "ExerciseClient is not ACTIVE" }
-        check(exercise.callbackRegistered) { "Exercise callback is not registered" }
-        check(exercise.sampleCount >= 5) { "At least 5 valid samples are required before starting" }
-        check(exercise.lastError == "--") { "ExerciseClient has an error: ${exercise.lastError}" }
-        if (type == BackgroundTestType.BATTERY_20_MIN) {
-            check(charging == false) { "Battery test requires the watch to be disconnected from the charger" }
+        check(!_state.value.isActive) { "已有后台测试正在运行" }
+        check(exercise.serviceRunning) { "后台心率服务尚未运行" }
+        check(exercise.sessionState == ExerciseSessionState.ACTIVE) { "后台心率会话尚未进入运行状态" }
+        check(exercise.callbackRegistered) { "后台心率回调尚未注册" }
+        check(exercise.sampleCount >= 5) { "开始测试前至少需要 5 个有效心率样本" }
+        check(exercise.lastError == "--") { "后台心率测量发生错误：${exercise.lastError}" }
+        val worn = wornFromAvailability(exercise.availability)
+        when (scenario) {
+            WearScenario.OFF_WRIST_BASELINE -> check(worn == false) {
+                "未佩戴基线要求手表明确识别为未佩戴"
+            }
+            WearScenario.ON_WRIST_REAL_USE -> check(worn == true) {
+                "正常佩戴测试要求心率数据可用，请先正确佩戴手表"
+            }
+        }
+        if (type != BackgroundTestType.SCREEN_OFF_10_MIN) {
+            check(charging == false) { "续航测试要求先断开充电器" }
+        }
+        if (type == BackgroundTestType.FORMAL_60_MIN) {
+            check(scenario == WearScenario.ON_WRIST_REAL_USE) {
+                "60 分钟正式续航测试只允许正常佩戴场景"
+            }
         }
 
         val now = System.currentTimeMillis()
         val sessionId = SESSION_ID_FORMATTER.format(Instant.ofEpochMilli(now)) +
             "_${type.name}_${scenario.name}"
         val battery = context.batteryPercent()
-        val worn = wornFromAvailability(exercise.availability)
         val next = BackgroundTestSnapshot(
             state = BackgroundTestState.ACTIVE,
             sessionId = sessionId,
@@ -134,7 +164,8 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
                 .put("screenInteractive", context.isScreenInteractive())
                 .put("availability", exercise.availability),
         )
-        update(next)
+        // Test boundaries are rare and must survive an immediate process loss.
+        update(next, persistSynchronously = true)
         next
     }
 
@@ -171,6 +202,9 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
                 .put("containsHistoricalSamples", historical)
                 .put("samples", pointArray),
         )
+        // ExerciseUpdate callbacks without valid heart-rate points are not
+        // heart-rate delivery and must not reset the no-delivery timer.
+        if (validPoints.isEmpty()) return
         val noCallback = current.lastCallbackReceiveMillis
             ?.let { (receiveMillis - it).coerceAtLeast(0L) }
             ?: current.startMillis?.let { (receiveMillis - it).coerceAtLeast(0L) }
@@ -184,6 +218,10 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
                 callbacksDeliveredWhileScreenOff = current.callbacksDeliveredWhileScreenOff +
                     if (interactive) 0 else 1,
                 lastCallbackReceiveMillis = receiveMillis,
+                latestSampleEpochMillis = maxOf(
+                    current.latestSampleEpochMillis ?: Long.MIN_VALUE,
+                    validPoints.maxOf { it.sampleEpochMillis },
+                ),
                 longestNoCallbackDurationMs = maxOf(current.longestNoCallbackDurationMs, noCallback),
             ),
         )
@@ -203,6 +241,7 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             current.copy(
                 screenOnCount = current.screenOnCount + if (interactive) 1 else 0,
                 screenOffCount = current.screenOffCount + if (interactive) 0 else 1,
+                lastScreenOnMillis = if (interactive) epochMillis else current.lastScreenOnMillis,
             ),
         )
     }
@@ -234,6 +273,20 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
                 .put("dataAgeMillis", ageMillis),
         )
         update(current.copy(staleEventCount = current.staleEventCount + 1))
+    }
+
+    @Synchronized
+    fun recordWakeLock(acquired: Boolean, reason: String, timeoutMillis: Long? = null) {
+        val current = _state.value
+        if (!current.isActive) return
+        writeEvent(
+            current.sessionId,
+            JSONObject()
+                .put("event", if (acquired) "WAKE_LOCK_ACQUIRED" else "WAKE_LOCK_RELEASED")
+                .put("epochMillis", System.currentTimeMillis())
+                .put("reason", reason)
+                .putNullable("timeoutMillis", timeoutMillis),
+        )
     }
 
     @Synchronized
@@ -269,43 +322,103 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             current.copy(
                 serviceRestartCount = current.serviceRestartCount + 1,
                 processRestartCount = current.processRestartCount + if (processRestarted) 1 else 0,
-                warning = if (processRestarted) "Process restarted during active test" else current.warning,
+                warning = if (processRestarted) "测试期间应用进程发生重启" else current.warning,
             ),
         )
     }
 
-    /** Returns true once an active test reaches its target duration. */
+    /**
+     * A target window is not complete until Health Services has delivered a
+     * sample at or beyond its end. This preserves the cached tail while the
+     * screen is off instead of stopping ExerciseClient at the timer boundary.
+     */
     @Synchronized
-    fun tick(now: Long = System.currentTimeMillis()): Boolean {
-        val current = _state.value
-        if (!current.isActive) return false
+    fun tick(now: Long = System.currentTimeMillis()): BackgroundTestTickResult? {
+        var current = _state.value
+        if (!current.isActive) return null
         if (now - preferences.getLong(KEY_LAST_BATTERY_PERSIST, 0L) >= 60_000L) {
             preferences.edit { putLong(KEY_LAST_BATTERY_PERSIST, now) }
             update(current.copy(currentBatteryPercent = context.batteryPercent()))
+            current = _state.value
         }
-        return current.targetEndMillis?.let { now >= it } == true
+        val targetEnd = current.targetEndMillis ?: return null
+        if (now < targetEnd) return null
+        if (current.targetReachedMillis == null) {
+            val battery = context.batteryPercent()
+            val charging = context.isBatteryCharging()
+            writeEvent(
+                current.sessionId,
+                JSONObject()
+                    .put("event", "TEST_WINDOW_END")
+                    .put("epochMillis", targetEnd)
+                    .put("detectedEpochMillis", now)
+                    .putNullable("endBatteryPercent", battery)
+                    .putNullable("endCharging", charging),
+            )
+            current = current.copy(
+                targetReachedMillis = now,
+                targetEndBatteryPercent = battery,
+                targetEndCharging = charging,
+                currentBatteryPercent = battery,
+            )
+            update(current, persistSynchronously = true)
+        }
+        if ((current.latestSampleEpochMillis ?: Long.MIN_VALUE) >= targetEnd) {
+            return BackgroundTestTickResult.COMPLETE
+        }
+        return if (shouldTailDrainTimeout(now, targetEnd, current.lastScreenOnMillis)) {
+            BackgroundTestTickResult.DRAIN_TIMEOUT
+        } else {
+            null
+        }
     }
 
     @Synchronized
     fun finish(reason: String, abnormal: Boolean = false): BackgroundTestSnapshot? {
         val current = _state.value
         if (!current.isActive) return null
-        val now = System.currentTimeMillis()
+        val finalizedMillis = System.currentTimeMillis()
+        val targetCompletion = reason.startsWith("TARGET_DURATION")
+        val testWindowEndMillis = if (targetCompletion) {
+            current.targetEndMillis ?: finalizedMillis
+        } else {
+            finalizedMillis
+        }
+        val endBattery = if (targetCompletion) {
+            current.targetEndBatteryPercent ?: context.batteryPercent()
+        } else {
+            context.batteryPercent()
+        }
+        val endCharging = if (targetCompletion) {
+            current.targetEndCharging ?: context.isBatteryCharging()
+        } else {
+            context.isBatteryCharging()
+        }
         val endingNoCallback = current.lastCallbackReceiveMillis
-            ?.let { (now - it).coerceAtLeast(0L) }
-            ?: current.startMillis?.let { (now - it).coerceAtLeast(0L) }
+            ?.let { (finalizedMillis - it).coerceAtLeast(0L) }
+            ?: current.startMillis?.let { (finalizedMillis - it).coerceAtLeast(0L) }
             ?: 0L
         writeEvent(
             current.sessionId,
             JSONObject()
                 .put("event", "TEST_END")
-                .put("epochMillis", now)
+                .put("epochMillis", finalizedMillis)
+                .put("testWindowEndEpochMillis", testWindowEndMillis)
                 .put("reason", reason)
                 .put("abnormal", abnormal)
-                .putNullable("endBatteryPercent", context.batteryPercent())
-                .putNullable("endCharging", context.isBatteryCharging()),
+                .putNullable("endBatteryPercent", endBattery)
+                .putNullable("endCharging", endCharging),
         )
-        val report = buildReport(current, now, reason, abnormal, endingNoCallback)
+        val report = buildReport(
+            initial = current,
+            endMillis = testWindowEndMillis,
+            reportFinalizedMillis = finalizedMillis,
+            endBattery = endBattery,
+            endCharging = endCharging,
+            reason = reason,
+            abnormal = abnormal,
+            endingNoCallback = endingNoCallback,
+        )
         val jsonFile = File(testsDir, "${current.sessionId}.json")
         val textFile = File(testsDir, "${current.sessionId}.txt")
         jsonFile.writeText(report.first.toString(2))
@@ -313,11 +426,11 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
         val finalState = current.copy(
             state = when {
                 abnormal -> BackgroundTestState.ABNORMAL_TERMINATION
-                reason == "TARGET_DURATION_REACHED" -> BackgroundTestState.COMPLETED
+                targetCompletion -> BackgroundTestState.COMPLETED
                 else -> BackgroundTestState.STOPPED
             },
-            endMillis = now,
-            currentBatteryPercent = context.batteryPercent(),
+            endMillis = testWindowEndMillis,
+            currentBatteryPercent = endBattery,
             longestNoCallbackDurationMs = maxOf(current.longestNoCallbackDurationMs, endingNoCallback),
             latestReportJsonPath = jsonFile.absolutePath,
             latestReportTextPath = textFile.absolutePath,
@@ -326,7 +439,8 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
                 (0 until warnings.length()).joinToString("; ") { warnings.optString(it) }
             }?.ifBlank { "--" } ?: "--",
         )
-        update(finalState)
+        // The final report paths and state must be durable before returning.
+        update(finalState, persistSynchronously = true)
         return finalState
     }
 
@@ -342,6 +456,9 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
     private fun buildReport(
         initial: BackgroundTestSnapshot,
         endMillis: Long,
+        reportFinalizedMillis: Long,
+        endBattery: Int?,
+        endCharging: Boolean?,
         reason: String,
         abnormal: Boolean,
         endingNoCallback: Long,
@@ -358,6 +475,10 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
         var serviceRestarts = 0L
         var processRestarts = 0L
         var errors = 0L
+        var historicalCallbackBatches = 0L
+        var maxCallbackBatchSize = 0
+        var wakeLockAcquireCount = 0L
+        var wakeLockReleaseCount = 0L
         var initialInteractive = true
         events.forEach { event ->
             when (event.optString("event")) {
@@ -374,12 +495,17 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
                     if (event.optBoolean("processRestart")) processRestarts++
                 }
                 "ERROR" -> errors++
+                "WAKE_LOCK_ACQUIRED" -> wakeLockAcquireCount++
+                "WAKE_LOCK_RELEASED" -> wakeLockReleaseCount++
                 "CALLBACK_BATCH" -> {
                     val receive = event.optLong("callbackReceiveEpochMillis")
+                    val array = event.optJSONArray("samples") ?: JSONArray()
+                    if (array.length() == 0) return@forEach
                     callbackTimes += receive
+                    maxCallbackBatchSize = maxOf(maxCallbackBatchSize, array.length())
+                    if (event.optBoolean("containsHistoricalSamples")) historicalCallbackBatches++
                     val callbackOff = !event.optBoolean("screenInteractive", true)
                     if (callbackOff) callbacksOff++
-                    val array = event.optJSONArray("samples") ?: JSONArray()
                     for (index in 0 until array.length()) {
                         val sample = array.getJSONObject(index)
                         val timestamp = sample.getLong("sampleEpochMillis")
@@ -409,48 +535,87 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             return interactive
         }
         val sampledWhileOff = samples.count { !interactiveAt(it.sampleMillis) }.toLong()
+        val screenOffSamples = samples.filter { !interactiveAt(it.sampleMillis) }
         val samplesDeliveredOff = samples.count { it.deliveredWhileScreenOff }.toLong()
-        val callbackSequence = (listOfNotNull(initial.startMillis) + callbackTimes.sorted() + endMillis).sorted()
+        val screenOffSamplesDeliveredAfterWake = screenOffSamples.count { !it.deliveredWhileScreenOff }.toLong()
+        val screenOffLatencies = screenOffSamples
+            .map { (it.receiveMillis - it.sampleMillis).coerceAtLeast(0L) }
+            .sorted()
+        val callbackSequence = (
+            listOfNotNull(initial.startMillis) + callbackTimes.sorted() + reportFinalizedMillis
+        ).sorted()
         val noCallbackDurations = callbackSequence.zipWithNext { first, second -> second - first }
         val longestNoCallback = maxOf(noCallbackDurations.maxOrNull() ?: 0L, endingNoCallback)
         val avgSampleInterval = intervals.averageOrNull()
         val maxSampleInterval = intervals.maxOrNull()
         val avgLatency = latencies.averageOrNull()
-        val medianLatency = percentile(latencies, 0.50)
+        val medianLatency = median(latencies)
         val p95Latency = percentile(latencies, 0.95)
         val maxLatency = latencies.maxOrNull()
+        val screenOffAvgLatency = screenOffLatencies.averageOrNull()
+        val screenOffMedianLatency = median(screenOffLatencies)
+        val screenOffP95Latency = percentile(screenOffLatencies, 0.95)
+        val screenOffMaxLatency = screenOffLatencies.maxOrNull()
         val duration = (endMillis - (initial.startMillis ?: endMillis)).coerceAtLeast(0L)
-        val endBattery = context.batteryPercent()
+        val firstSampleDelay = samples.firstOrNull()?.let {
+            (it.sampleMillis - (initial.startMillis ?: it.sampleMillis)).coerceAtLeast(0L)
+        }
+        val lastSampleToWindowEnd = samples.lastOrNull()?.let {
+            (endMillis - it.sampleMillis).coerceAtLeast(0L)
+        }
+        val targetWindowCovered = isTargetWindowCovered(
+            firstSampleDelay,
+            lastSampleToWindowEnd,
+            COVERAGE_GAP_LIMIT_MILLIS,
+        )
         val batteryDelta = if (initial.startBatteryPercent != null && endBattery != null) {
             initial.startBatteryPercent - endBattery
         } else null
         val hourlyDrain = batteryDelta?.let { if (duration > 0) it * 3_600_000.0 / duration else null }
         val offWindowExists = screenEvents.any { !it.second } || !initialInteractive
-        val continuouslySampled = sampledWhileOff > 0 && (maxSampleInterval ?: Long.MAX_VALUE) <= 10_000L
-        val nearRealtime = p95Latency != null && p95Latency <= 5_000L && longestNoCallback <= 10_000L
+        val continuouslySampled = targetWindowCovered &&
+            sampledWhileOff > 0 &&
+            (maxSampleInterval ?: Long.MAX_VALUE) <= COVERAGE_GAP_LIMIT_MILLIS
+        val nearRealtime = screenOffP95Latency != null &&
+            screenOffP95Latency <= 5_000L &&
+            longestNoCallback <= 10_000L
+        val batchedDeliveryDetected = historicalCallbackBatches > 0 || screenOffSamplesDeliveredAfterWake > 0
         val classification = when {
-            abnormal || serviceRestarts > 0 || processRestarts > 0 -> "4. Session or service was terminated/restarted"
-            !offWindowExists -> "5. Insufficient data: no screen-off window"
-            sampledWhileOff == 0L -> "3. Sampling stopped after screen-off or no off-screen samples"
-            continuouslySampled && nearRealtime -> "1. Continuous sampling with near-real-time screen-off delivery"
-            continuouslySampled -> "2. Continuous sampling, but screen-off data was cached/batched"
-            else -> "5. Insufficient data to prove continuous sampling"
+            abnormal || serviceRestarts > 0 || processRestarts > 0 -> "4. 会话或服务被终止/重启"
+            !offWindowExists -> "5. 数据不足：没有息屏窗口"
+            sampledWhileOff == 0L -> "3. 息屏后停止采样，或没有息屏样本"
+            continuouslySampled && nearRealtime -> "1. 持续采样，并在息屏时近实时交付"
+            continuouslySampled -> "2. 持续采样，但息屏数据被缓存或批量补发"
+            else -> "5. 数据不足，无法证明持续采样"
         }
         val warnings = JSONArray().apply {
             if (duration < BackgroundTestType.valueOf(initial.testType).durationMillis) {
-                put("Test ended before its requested duration")
+                put("测试提前结束，未达到要求时长")
+            }
+            if (!targetWindowCovered) {
+                put("目标测试窗口的开头或结尾缺少样本，不能据此证明完整时段持续采样")
+            }
+            if (reason == "TARGET_DURATION_DRAIN_TIMEOUT") {
+                put("目标时长结束至少 5 分钟且亮屏等待 15 秒后，仍未收到覆盖窗口末端的样本")
             }
             if (initial.testType == BackgroundTestType.BATTERY_20_MIN.name) {
-                put("A 20-minute battery test is only a coarse estimate; run at least 60 minutes for formal results")
-                if (batteryDelta == 0) put("No 1% change was observed at the system battery percentage granularity; this is not zero drain")
+                put("20 分钟续航测试只适合快速估算，正式结果至少测试 60 分钟")
+                if (batteryDelta == 0) put("系统电量没有下降 1%，不能据此认定零耗电")
             }
-            if (initial.startCharging != false && initial.testType == BackgroundTestType.BATTERY_20_MIN.name) {
-                put("Battery test started while charging state was not confirmed as false")
+            if (initial.testType == BackgroundTestType.REALTIME_DELIVERY_10_MIN.name) {
+                put("本轮使用有超时上限的 PARTIAL_WAKE_LOCK，仅用于验证实时交付及额外耗电")
+                if (wakeLockAcquireCount == 0L) put("实时交付实验未记录到 WakeLock 获取事件，结果无效")
+            }
+            if (initial.testType == BackgroundTestType.FORMAL_60_MIN.name && initial.scenario != WearScenario.ON_WRIST_REAL_USE) {
+                put("60 分钟正式结果只对正常佩戴场景有效")
+            }
+            if (initial.startCharging != false && initial.testType != BackgroundTestType.SCREEN_OFF_10_MIN.name) {
+                put("测试开始时未确认已断开充电")
             }
             if (initial.scenario == WearScenario.OFF_WRIST_BASELINE) {
-                put("OFF_WRIST_BASELINE must not be mixed with ON_WRIST_REAL_USE results")
+                put("未佩戴基线不能与正常佩戴结果混合比较")
             }
-            put("PPG illumination cannot be proven directly by this API; infer only from samples and availability")
+            put("软件只能依据样本和佩戴状态判断，不能直接证明 PPG 灯是否点亮")
         }
         val statistics = JSONObject()
             .put("actualDurationMs", duration)
@@ -461,16 +626,29 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             .put("callbacksDeliveredWhileScreenOff", callbacksOff)
             .putNullable("averageSampleIntervalMs", avgSampleInterval)
             .putNullable("maxSampleIntervalMs", maxSampleInterval)
+            .putNullable("firstSampleDelayMs", firstSampleDelay)
+            .putNullable("lastSampleToWindowEndMs", lastSampleToWindowEnd)
+            .put("targetWindowCovered", targetWindowCovered)
             .putNullable("averageDeliveryLatencyMs", avgLatency)
             .putNullable("medianDeliveryLatencyMs", medianLatency)
             .putNullable("p95DeliveryLatencyMs", p95Latency)
             .putNullable("maxDeliveryLatencyMs", maxLatency)
+            .putNullable("screenOffAverageDeliveryLatencyMs", screenOffAvgLatency)
+            .putNullable("screenOffMedianDeliveryLatencyMs", screenOffMedianLatency)
+            .putNullable("screenOffP95DeliveryLatencyMs", screenOffP95Latency)
+            .putNullable("screenOffMaxDeliveryLatencyMs", screenOffMaxLatency)
             .put("longestNoCallbackDurationMs", longestNoCallback)
+            .put("historicalCallbackBatchCount", historicalCallbackBatches)
+            .put("maxCallbackBatchSampleCount", maxCallbackBatchSize)
+            .put("screenOffSamplesDeliveredAfterWake", screenOffSamplesDeliveredAfterWake)
+            .put("batchedDeliveryDetected", batchedDeliveryDetected)
             .put("staleEventCount", staleEvents)
             .put("availabilityChangeCount", availabilityChanges)
             .put("offBodyAvailabilityCount", unavailableOffBodyCount)
             .put("serviceRestartCount", serviceRestarts)
             .put("processRestartCount", processRestarts)
+            .put("wakeLockAcquireCount", wakeLockAcquireCount)
+            .put("wakeLockReleaseCount", wakeLockReleaseCount)
             .put("screenOnCount", screenEvents.count { it.second })
             .put("screenOffCount", screenEvents.count { !it.second })
             .put("errorCount", errors)
@@ -481,13 +659,15 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             .putNullable("changePercentagePoints", batteryDelta)
             .putNullable("simpleHourlyDrainPercent", hourlyDrain)
             .putNullable("startCharging", initial.startCharging)
-            .putNullable("endCharging", context.isBatteryCharging())
+            .putNullable("endCharging", endCharging)
         val report = JSONObject()
             .put("sessionId", initial.sessionId)
             .put("testType", initial.testType)
             .put("scenario", initial.scenario.name)
             .put("startEpochMillis", initial.startMillis)
             .put("endEpochMillis", endMillis)
+            .put("reportFinalizedEpochMillis", reportFinalizedMillis)
+            .put("tailDrainDurationMs", (reportFinalizedMillis - endMillis).coerceAtLeast(0L))
             .put("endReason", reason)
             .putNullable("startWorn", initial.startWorn)
             .put("statistics", statistics)
@@ -498,18 +678,20 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             .put("warnings", warnings)
             .put("rawEventsFile", eventsFile(initial.sessionId).absolutePath)
         val text = buildString {
-            appendLine("Background Delivery & Battery Test")
-            appendLine("sessionId: ${initial.sessionId}")
-            appendLine("testType: ${initial.testType}")
-            appendLine("scenario: ${initial.scenario.name}")
-            appendLine("start: ${formatTime(initial.startMillis)}")
-            appendLine("end: ${formatTime(endMillis)}")
-            appendLine("actualDuration: ${formatDuration(duration)}")
-            appendLine("endReason: $reason")
+            appendLine("后台交付与续航测试报告")
+            appendLine("测试编号: ${initial.sessionId}")
+            appendLine("测试类型: ${BackgroundTestType.valueOf(initial.testType).displayName}")
+            appendLine("测试场景: ${initial.scenario.displayName}")
+            appendLine("开始时间: ${formatTime(initial.startMillis)}")
+            appendLine("结束时间: ${formatTime(endMillis)}")
+            appendLine("报告生成时间: ${formatTime(reportFinalizedMillis)}")
+            appendLine("尾部缓存等待: ${formatDuration((reportFinalizedMillis - endMillis).coerceAtLeast(0L))}")
+            appendLine("实际时长: ${formatDuration(duration)}")
+            appendLine("结束原因: $reason")
             appendLine()
-            appendLine("A. Continuous sampling: $continuouslySampled")
-            appendLine("B. Near-real-time ForegroundService delivery: $nearRealtime")
-            appendLine("classification: $classification")
+            appendLine("A. 是否持续采样: ${if (continuouslySampled) "是" else "否"}")
+            appendLine("B. 息屏时是否近实时交付: ${if (nearRealtime) "是" else "否"}")
+            appendLine("判定: $classification")
             appendLine()
             appendLine("totalUniqueSamples: ${samples.size}")
             appendLine("samplesSampledWhileScreenOff: $sampledWhileOff")
@@ -518,16 +700,29 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             appendLine("callbacksDeliveredWhileScreenOff: $callbacksOff")
             appendLine("averageSampleIntervalMs: ${formatNumber(avgSampleInterval)}")
             appendLine("maxSampleIntervalMs: ${maxSampleInterval ?: "--"}")
+            appendLine("firstSampleDelayMs: ${firstSampleDelay ?: "--"}")
+            appendLine("lastSampleToWindowEndMs: ${lastSampleToWindowEnd ?: "--"}")
+            appendLine("targetWindowCovered: $targetWindowCovered")
             appendLine("averageDeliveryLatencyMs: ${formatNumber(avgLatency)}")
-            appendLine("medianDeliveryLatencyMs: ${medianLatency ?: "--"}")
+            appendLine("medianDeliveryLatencyMs: ${formatNumber(medianLatency)}")
             appendLine("p95DeliveryLatencyMs: ${p95Latency ?: "--"}")
             appendLine("maxDeliveryLatencyMs: ${maxLatency ?: "--"}")
+            appendLine("screenOffAverageDeliveryLatencyMs: ${formatNumber(screenOffAvgLatency)}")
+            appendLine("screenOffMedianDeliveryLatencyMs: ${formatNumber(screenOffMedianLatency)}")
+            appendLine("screenOffP95DeliveryLatencyMs: ${screenOffP95Latency ?: "--"}")
+            appendLine("screenOffMaxDeliveryLatencyMs: ${screenOffMaxLatency ?: "--"}")
             appendLine("longestNoCallbackDurationMs: $longestNoCallback")
+            appendLine("historicalCallbackBatchCount: $historicalCallbackBatches")
+            appendLine("maxCallbackBatchSampleCount: $maxCallbackBatchSize")
+            appendLine("screenOffSamplesDeliveredAfterWake: $screenOffSamplesDeliveredAfterWake")
+            appendLine("batchedDeliveryDetected: $batchedDeliveryDetected")
             appendLine("staleEventCount: $staleEvents")
             appendLine("availabilityChangeCount: $availabilityChanges")
             appendLine("offBodyAvailabilityCount: $unavailableOffBodyCount")
             appendLine("serviceRestartCount: $serviceRestarts")
             appendLine("processRestartCount: $processRestarts")
+            appendLine("wakeLockAcquireCount: $wakeLockAcquireCount")
+            appendLine("wakeLockReleaseCount: $wakeLockReleaseCount")
             appendLine("errorCount: $errors")
             appendLine("crashCount: ${if (abnormal) 1 else 0}")
             appendLine()
@@ -538,7 +733,7 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             appendLine("startCharging: ${initial.startCharging ?: "--"}")
             appendLine("startWorn: ${initial.startWorn ?: "UNKNOWN"}")
             appendLine()
-            appendLine("Warnings:")
+            appendLine("警告:")
             for (index in 0 until warnings.length()) appendLine("- ${warnings.getString(index)}")
         }
         return report to text
@@ -551,14 +746,17 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
         sessionId = preferences.getString("sessionId", "--") ?: "--",
         testType = preferences.getString("testType", "--") ?: "--",
         scenario = runCatching {
-            WearScenario.valueOf(preferences.getString("scenario", WearScenario.OFF_WRIST_BASELINE.name)!!)
-        }.getOrDefault(WearScenario.OFF_WRIST_BASELINE),
+            WearScenario.valueOf(preferences.getString("scenario", WearScenario.ON_WRIST_REAL_USE.name)!!)
+        }.getOrDefault(WearScenario.ON_WRIST_REAL_USE),
         startMillis = preferences.longOrNull("startMillis"),
         targetEndMillis = preferences.longOrNull("targetEndMillis"),
+        targetReachedMillis = preferences.longOrNull("targetReachedMillis"),
         endMillis = preferences.longOrNull("endMillis"),
         startBatteryPercent = preferences.intOrNull("startBatteryPercent"),
         currentBatteryPercent = preferences.intOrNull("currentBatteryPercent"),
+        targetEndBatteryPercent = preferences.intOrNull("targetEndBatteryPercent"),
         startCharging = preferences.booleanOrNull("startCharging"),
+        targetEndCharging = preferences.booleanOrNull("targetEndCharging"),
         startWorn = preferences.booleanOrNull("startWorn"),
         totalSamples = preferences.getLong("totalSamples", 0),
         callbackBatchCount = preferences.getLong("callbackBatchCount", 0),
@@ -570,9 +768,11 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
         processRestartCount = preferences.getLong("processRestartCount", 0),
         screenOnCount = preferences.getLong("screenOnCount", 0),
         screenOffCount = preferences.getLong("screenOffCount", 0),
+        lastScreenOnMillis = preferences.longOrNull("lastScreenOnMillis"),
         errorCount = preferences.getLong("errorCount", 0),
         crashCount = preferences.getLong("crashCount", 0),
         lastCallbackReceiveMillis = preferences.longOrNull("lastCallbackReceiveMillis"),
+        latestSampleEpochMillis = preferences.longOrNull("latestSampleEpochMillis"),
         longestNoCallbackDurationMs = preferences.getLong("longestNoCallbackDurationMs", 0),
         latestReportJsonPath = preferences.getString("latestReportJsonPath", "--") ?: "--",
         latestReportTextPath = preferences.getString("latestReportTextPath", "--") ?: "--",
@@ -581,19 +781,25 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
     )
 
     @Synchronized
-    private fun update(value: BackgroundTestSnapshot) {
+    private fun update(
+        value: BackgroundTestSnapshot,
+        persistSynchronously: Boolean = false,
+    ) {
         _state.value = value
-        preferences.edit(commit = true) {
+        preferences.edit(commit = persistSynchronously) {
             putString("state", value.state.name)
             putString("sessionId", value.sessionId)
             putString("testType", value.testType)
             putString("scenario", value.scenario.name)
             putNullableLong("startMillis", value.startMillis)
             putNullableLong("targetEndMillis", value.targetEndMillis)
+            putNullableLong("targetReachedMillis", value.targetReachedMillis)
             putNullableLong("endMillis", value.endMillis)
             putNullableInt("startBatteryPercent", value.startBatteryPercent)
             putNullableInt("currentBatteryPercent", value.currentBatteryPercent)
+            putNullableInt("targetEndBatteryPercent", value.targetEndBatteryPercent)
             putNullableBoolean("startCharging", value.startCharging)
+            putNullableBoolean("targetEndCharging", value.targetEndCharging)
             putNullableBoolean("startWorn", value.startWorn)
             putLong("totalSamples", value.totalSamples)
             putLong("callbackBatchCount", value.callbackBatchCount)
@@ -605,9 +811,11 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             putLong("processRestartCount", value.processRestartCount)
             putLong("screenOnCount", value.screenOnCount)
             putLong("screenOffCount", value.screenOffCount)
+            putNullableLong("lastScreenOnMillis", value.lastScreenOnMillis)
             putLong("errorCount", value.errorCount)
             putLong("crashCount", value.crashCount)
             putNullableLong("lastCallbackReceiveMillis", value.lastCallbackReceiveMillis)
+            putNullableLong("latestSampleEpochMillis", value.latestSampleEpochMillis)
             putLong("longestNoCallbackDurationMs", value.longestNoCallbackDurationMs)
             putString("latestReportJsonPath", value.latestReportJsonPath)
             putString("latestReportTextPath", value.latestReportTextPath)
@@ -636,6 +844,7 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
         private const val KEY_ACTIVE_PID = "activePid"
         private const val KEY_LAST_BATTERY_PERSIST = "lastBatteryPersist"
         private const val HISTORICAL_SAMPLE_THRESHOLD_MS = 5_000L
+        private const val COVERAGE_GAP_LIMIT_MILLIS = 10_000L
         private val SESSION_ID_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
             .withZone(ZoneId.systemDefault())
 
@@ -654,11 +863,40 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
     }
 }
 
-private fun percentile(sortedValues: List<Long>, percentile: Double): Long? {
+internal fun percentile(sortedValues: List<Long>, percentile: Double): Long? {
     if (sortedValues.isEmpty()) return null
     val index = (ceil(percentile * sortedValues.size).toInt() - 1).coerceIn(sortedValues.indices)
     return sortedValues[index]
 }
+
+internal fun median(sortedValues: List<Long>): Double? = when {
+    sortedValues.isEmpty() -> null
+    sortedValues.size % 2 == 1 -> sortedValues[sortedValues.size / 2].toDouble()
+    else -> {
+        val upper = sortedValues.size / 2
+        (sortedValues[upper - 1].toDouble() + sortedValues[upper].toDouble()) / 2.0
+    }
+}
+
+internal fun isTargetWindowCovered(
+    firstSampleDelayMs: Long?,
+    lastSampleToWindowEndMs: Long?,
+    gapLimitMs: Long = 10_000L,
+): Boolean = firstSampleDelayMs != null &&
+    lastSampleToWindowEndMs != null &&
+    firstSampleDelayMs <= gapLimitMs &&
+    lastSampleToWindowEndMs <= gapLimitMs
+
+internal fun shouldTailDrainTimeout(
+    nowMillis: Long,
+    targetEndMillis: Long,
+    lastScreenOnMillis: Long?,
+    maxDrainWaitMillis: Long = 5 * 60_000L,
+    postWakeGraceMillis: Long = 15_000L,
+): Boolean = nowMillis - targetEndMillis >= maxDrainWaitMillis &&
+    lastScreenOnMillis != null &&
+    lastScreenOnMillis >= targetEndMillis &&
+    nowMillis - lastScreenOnMillis >= postWakeGraceMillis
 
 private fun List<Long>.averageOrNull(): Double? = if (isEmpty()) null else average()
 

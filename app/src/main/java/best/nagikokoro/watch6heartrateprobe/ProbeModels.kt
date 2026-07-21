@@ -1,8 +1,8 @@
 package best.nagikokoro.watch6heartrateprobe
 
 enum class ProbeMode(val displayName: String) {
-    MEASURE("MeasureClient Probe"),
-    EXERCISE("ExerciseClient Screen-off Test"),
+    MEASURE("前台对照"),
+    EXERCISE("后台连续"),
 }
 
 enum class ProbeStatus(val code: String, val userMessage: String) {
@@ -24,16 +24,16 @@ enum class ProbeStatus(val code: String, val userMessage: String) {
 }
 
 enum class PermissionState(val displayText: String) {
-    UNKNOWN("UNKNOWN"),
-    GRANTED("GRANTED"),
-    NOT_GRANTED("NOT_GRANTED"),
-    PERMANENTLY_DENIED("PERMANENTLY_DENIED"),
+    UNKNOWN("未知"),
+    GRANTED("已授权"),
+    NOT_GRANTED("未授权"),
+    PERMANENTLY_DENIED("已永久拒绝"),
 }
 
 enum class TriState(val displayText: String) {
-    UNKNOWN("UNKNOWN"),
-    YES("YES"),
-    NO("NO"),
+    UNKNOWN("未知"),
+    YES("是"),
+    NO("否"),
 }
 
 enum class LogLevel { DEBUG, INFO, WARN, ERROR }
@@ -83,7 +83,7 @@ data class ProbeUiState(
     val nowMillis: Long = System.currentTimeMillis(),
     val exercise: ExerciseSessionSnapshot = ExerciseSessionSnapshot(),
     val backgroundTest: BackgroundTestSnapshot = BackgroundTestSnapshot(),
-    val selectedWearScenario: WearScenario = WearScenario.OFF_WRIST_BASELINE,
+    val selectedWearScenario: WearScenario = WearScenario.ON_WRIST_REAL_USE,
     val errorCode: String = ProbeStatus.INITIALIZING.code,
     val errorDescription: String = ProbeStatus.INITIALIZING.userMessage,
     val visibleLogs: List<DiagnosticEntry> = emptyList(),
