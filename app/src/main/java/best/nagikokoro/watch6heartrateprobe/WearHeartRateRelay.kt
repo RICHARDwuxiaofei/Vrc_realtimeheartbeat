@@ -27,6 +27,7 @@ class WearHeartRateRelay(
         accuracy: String,
         batteryPercent: Int,
         screenInteractive: Boolean,
+        relayMode: WatchRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS,
         messageType: String = "heart_rate",
     ) {
         val node = cachedNode
@@ -43,6 +44,7 @@ class WearHeartRateRelay(
                     accuracy,
                     batteryPercent,
                     screenInteractive,
+                    relayMode,
                     messageType,
                 ),
             )
@@ -86,6 +88,7 @@ class WearHeartRateRelay(
                             accuracy,
                             batteryPercent,
                             screenInteractive,
+                            relayMode,
                             messageType,
                         ),
                     )
@@ -151,6 +154,7 @@ class WearHeartRateRelay(
         accuracy: String,
         batteryPercent: Int,
         screenInteractive: Boolean,
+        relayMode: WatchRelayMode,
         messageType: String,
     ): ByteArray = JSONObject()
         .put("version", RelayProtocol.PROTOCOL_VERSION)
@@ -164,6 +168,8 @@ class WearHeartRateRelay(
         .put("accuracy", accuracy)
         .put("watchBatteryPercent", batteryPercent)
         .put("watchScreenInteractive", screenInteractive)
+        .put("watchRelayMode", relayMode.name)
+        .put("watchRelayIntervalSeconds", relayMode.intervalSeconds)
         .toString()
         .toByteArray(Charsets.UTF_8)
 

@@ -44,7 +44,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -58,13 +57,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val AppBackground = Color(0xFF08101F)
-private val CardBackground = Color(0xFF111B2E)
-private val CardElevated = Color(0xFF17243B)
-private val AccentBlue = Color(0xFF20B8FF)
-private val AccentCoral = Color(0xFFFF5B62)
-private val Success = Color(0xFF4CD69B)
-private val Muted = Color(0xFF9DAAC2)
+private val AppBackground = Color(0xFF0B0B0F)
+private val CardBackground = Color(0xFF121216)
+private val CardElevated = Color(0xFF1B1B20)
+private val AccentBlue = Color(0xFFD0BCFF)
+private val AccentCoral = Color(0xFFFFB4AB)
+private val Success = Color(0xFF8BD5A3)
+private val Muted = Color(0xFFCAC4D0)
+private val Outline = Color(0xFF49454F)
 
 class MobileMainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,9 +88,11 @@ private fun RelayApp() {
             background = AppBackground,
             surface = CardBackground,
             surfaceVariant = CardElevated,
-            onPrimary = Color(0xFF001E2D),
-            onBackground = Color.White,
-            onSurface = Color.White,
+            error = AccentCoral,
+            outline = Outline,
+            onPrimary = Color(0xFF381E72),
+            onBackground = Color(0xFFE6E1E5),
+            onSurface = Color(0xFFE6E1E5),
             onSurfaceVariant = Muted,
         ),
     ) { RelayScreen() }
@@ -111,6 +113,7 @@ private fun RelayScreen() {
     }
     val watchAlive = state.lastPhoneReceiveMillis?.let { now - it < 15_000 } == true
     val pcAlive = state.lastPcAckMillis?.let { now - it < maxOf(15_000L, state.forwardIntervalSeconds * 2_500L) } == true
+    val watchIntervalSeconds = state.watchRelayIntervalSeconds
 
     Scaffold(
         containerColor = AppBackground,
@@ -157,7 +160,20 @@ private fun RelayScreen() {
                 pcAlive && state.forwardingEnabled,
             )
 
-            TransferControlCard(state.forwardingEnabled, state.forwardIntervalSeconds)
+            TransferControlCard(
+                enabled = state.forwardingEnabled,
+                intervalSeconds = state.forwardIntervalSeconds,
+                watchIntervalSeconds = state.watchRelayIntervalSeconds,
+            )
+            if (watchIntervalSeconds != null &&
+                state.forwardIntervalSeconds < watchIntervalSeconds
+            ) {
+                AlertCard(
+                    "手机已选 ${state.forwardIntervalSeconds} 秒，但手表当前约 $watchIntervalSeconds 秒才产生一份新数据。请在手表停止传输后切到“1 秒实时”。",
+                    AccentBlue.copy(alpha = 0.10f),
+                    AccentBlue,
+                )
+            }
 
             SectionTitle("电脑地址")
             Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
@@ -215,7 +231,7 @@ private fun RelayScreen() {
                 AlertCard("检测到 VPN。电脑回执失败时，请允许局域网访问或暂时关闭 VPN。", Color(0x33FFB74D), Color(0xFFFFC56D))
             }
             Text(
-                "手机每秒接收手表心率，但只按上方间隔向电脑发送最新值。暂停后仍可在手机查看心率。",
+                "手表决定新心率多久到达手机；这里的发送间隔只控制手机到电脑。暂停后手机仍继续接收手表数据。",
                 color = Muted,
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
@@ -227,11 +243,13 @@ private fun RelayScreen() {
 
 @Composable
 private fun HeartRateHero(state: PhoneRelayState, now: Long, watchAlive: Boolean) {
-    Card(shape = RoundedCornerShape(28.dp)) {
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = CardElevated),
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Brush.linearGradient(listOf(Color(0xFF173764), Color(0xFF3B1D4D))))
                 .padding(horizontal = 22.dp, vertical = 22.dp),
         ) {
             Column {
@@ -252,17 +270,29 @@ private fun HeartRateHero(state: PhoneRelayState, now: Long, watchAlive: Boolean
 }
 
 @Composable
-private fun TransferControlCard(enabled: Boolean, intervalSeconds: Int) {
+private fun TransferControlCard(
+    enabled: Boolean,
+    intervalSeconds: Int,
+    watchIntervalSeconds: Int?,
+) {
     Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardElevated)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text("发送控制", fontWeight = FontWeight.Bold)
-                    Text(if (enabled) "正在向电脑发送最新心率" else "已暂停，手机仍继续接收", color = Muted, fontSize = 12.sp)
+                    Text(
+                        if (enabled) "手机 → 电脑" else "已暂停，手机仍继续接收",
+                        color = Muted,
+                        fontSize = 12.sp,
+                    )
                 }
                 Text(if (enabled) "运行中" else "已暂停", color = if (enabled) Success else AccentCoral, fontWeight = FontWeight.Bold)
             }
-            Text("发送间隔", color = Muted, fontSize = 12.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("手表 → 手机", color = Muted, fontSize = 12.sp)
+                Text(watchIntervalSeconds?.let { "约 ${it} 秒" } ?: "等待手表上报", fontSize = 12.sp)
+            }
+            Text("手机 → 电脑发送间隔", color = Muted, fontSize = 12.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 listOf(1, 2, 5, 10, 30).forEach { seconds ->
                     FilterChip(
@@ -277,8 +307,8 @@ private fun TransferControlCard(enabled: Boolean, intervalSeconds: Int) {
                 onClick = { PhoneRelayRepository.setForwardingEnabled(!enabled) },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (enabled) Color(0xFF3A2430) else AccentBlue,
-                    contentColor = if (enabled) AccentCoral else Color(0xFF001E2D),
+                    containerColor = if (enabled) Color(0xFF2B2022) else AccentBlue,
+                    contentColor = if (enabled) AccentCoral else Color(0xFF381E72),
                 ),
             ) { Text(if (enabled) "暂停发送到电脑" else "恢复发送到电脑", fontWeight = FontWeight.Bold) }
         }

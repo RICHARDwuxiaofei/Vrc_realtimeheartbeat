@@ -32,6 +32,8 @@ data class PhoneRelayState(
     val lastSequence: Long? = null,
     val lastSampleMillis: Long? = null,
     val lastPhoneReceiveMillis: Long? = null,
+    val watchRelayIntervalSeconds: Int? = null,
+    val watchRelayMode: String? = null,
     val lastPcAckMillis: Long? = null,
     val lastError: String = "--",
     val forwarding: Boolean = false,
@@ -134,6 +136,8 @@ object PhoneRelayRepository {
         Log.i(TAG, "Watch sample accepted type=${json.optString("type")} sequence=$sequence source=$sourceNodeId")
         val bpm = json.optInt("bpm", -1).takeIf { it > 0 }
         val sampleMillis = json.optLong("sampleEpochMillis", 0L).takeIf { it > 0 }
+        val watchRelayInterval = json.optInt("watchRelayIntervalSeconds", 0).takeIf { it in 1..30 }
+        val watchRelayMode = json.optString("watchRelayMode").takeIf { it.isNotBlank() }
         json.put("phoneReceivedEpochMillis", phoneReceiveMillis)
         json.put("phoneLocalIp", findLocalIpv4())
         json.put("phoneForwardIntervalSeconds", mutableState.value.forwardIntervalSeconds)
@@ -146,6 +150,8 @@ object PhoneRelayRepository {
                 lastSequence = sequence.takeIf { value -> value >= 0 },
                 lastSampleMillis = sampleMillis,
                 lastPhoneReceiveMillis = phoneReceiveMillis,
+                watchRelayIntervalSeconds = watchRelayInterval ?: it.watchRelayIntervalSeconds,
+                watchRelayMode = watchRelayMode ?: it.watchRelayMode,
                 lastError = "--",
             )
         }
