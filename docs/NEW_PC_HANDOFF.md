@@ -86,13 +86,16 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 主要参数：
 
 ```text
+/avatar/parameters/HR_Value   Int
+/avatar/parameters/HR_Hundreds Int
 /avatar/parameters/HR_Tens    Int
 /avatar/parameters/HR_Ones    Int
 /avatar/parameters/HRValid    Bool
 /avatar/parameters/HRPulse    Bool
 ```
 
-- 两位数版本超过 99 时钳制为 99。
+- `HR_Value` 是钳制到 `0..999` 的完整 BPM；后三项分别是百位、十位和个位。
+- 四个显示参数按 `HR_Value → HR_Hundreds → HR_Tens → HR_Ones` 顺序发送，类型均为 OSC Int32。
 - `HRPulse` 由电脑按 BPM 本地生成，不依赖每个手表样本触发。
 - 数据超时后 `HRValid=false`，Avatar 可显示 `--` 或 `NO SIGNAL`。
 - 为兼容早期版本，同时发送 `HeartRate`、`HeartRateNormalized`、`HeartRateValid`。
@@ -235,13 +238,13 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 - 修复 4990–4999 ms 批次被严格 5000 ms 节流跳过的问题。
 - 移除 Watch/Phone 重复 Data Layer runtime listener。
 - 正式版 Watch APK 已在 SM-R960 安装并真机检查入口、界面、按钮和无 WakeLock 权限。
-- Python Windows GUI、UDP ACK、OSC、超时、数字拆分和 HRPulse。
+- Python Windows GUI、UDP ACK、OSC、超时、三位数拆分和 HRPulse。
 
 换机后按顺序继续：
 
 1. 记录当前正式版 5–10 分钟息屏冒烟测试结果：电脑是否持续更新、返回表盘是否继续、是否出现断线。
 2. 做正常佩戴至少 60 分钟正式续航测试，记录开始/结束电量、发送间隔、手机/电脑断档。
-3. 在 VRChat 中实收 `HR_Tens`、`HR_Ones`、`HRValid`、`HRPulse`。
+3. 在 VRChat 中实收 `HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`、`HRValid`、`HRPulse`。
 4. 决定是否仍要继续最初的 Watch BLE GATT 直连电脑阶段；这部分尚未开始。
 5. 正式发布前配置稳定的 Android release signing；当前 APK 是 debug 签名。
 

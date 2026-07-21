@@ -14,10 +14,14 @@
 
 ## OSC 参数
 
-- `/avatar/parameters/HR_Tens`：Int，心率十位；两位数版本超过 99 时钳制为 99。
+- `/avatar/parameters/HR_Value`：Int，钳制到 `0..999` 的完整 BPM。
+- `/avatar/parameters/HR_Hundreds`：Int，心率百位。
+- `/avatar/parameters/HR_Tens`：Int，心率十位。
 - `/avatar/parameters/HR_Ones`：Int，心率个位。
 - `/avatar/parameters/HRValid`：Bool，真实心率有效时为 true，超时后为 false。
 - `/avatar/parameters/HRPulse`：Bool，由电脑按照最近 BPM 周期性生成约 120 ms 的脉冲。
+
+每次收到真实心率时，程序都严格按照 `HR_Value → HR_Hundreds → HR_Tens → HR_Ones` 的顺序发送四条三位数显示消息。链路测试包不会发送这些参数。
 
 为了兼容早期测试 Avatar，当前版本还会发送：
 

@@ -87,9 +87,15 @@ def stale_timeout_ms(forward_interval_seconds: int) -> int:
     return max(10_000, seconds * 2_500)
 
 
-def split_two_digits(bpm: int) -> tuple[int, int]:
-    value = max(0, min(99, bpm))
-    return divmod(value, 10)
+def clamp_osc_bpm(bpm: int) -> int:
+    return max(0, min(999, bpm))
+
+
+def split_three_digits(bpm: int) -> tuple[int, int, int]:
+    value = clamp_osc_bpm(bpm)
+    hundreds, remainder = divmod(value, 100)
+    tens, ones = divmod(remainder, 10)
+    return hundreds, tens, ones
 
 
 def normalized_heart_rate(bpm: int) -> float:

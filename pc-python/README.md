@@ -14,11 +14,15 @@ python .\pc-python\run_app.py
 
 ## OSC 参数
 
-- `/avatar/parameters/HR_Tens`：十位；两位数版本超过 99 时整体钳制为 99。
-- `/avatar/parameters/HR_Ones`：个位。
+- `/avatar/parameters/HR_Value`：钳制到 `0..999` 的完整 BPM，OSC Int32。
+- `/avatar/parameters/HR_Hundreds`：百位，OSC Int32。
+- `/avatar/parameters/HR_Tens`：十位，OSC Int32。
+- `/avatar/parameters/HR_Ones`：个位，OSC Int32。
 - `/avatar/parameters/HRValid`：真实心率有效状态。
 - `/avatar/parameters/HRPulse`：电脑按照 BPM 本地生成的 120 ms 心跳脉冲。
 - 兼容旧参数：`HeartRate`、`HeartRateNormalized`、`HeartRateValid`。
+
+每次收到真实心率时，程序都严格按照 `HR_Value → HR_Hundreds → HR_Tens → HR_Ones` 的顺序发送四条三位数显示消息。链路测试包不会发送这些参数。
 
 ## 测试
 
@@ -26,7 +30,7 @@ python .\pc-python\run_app.py
 python -m pytest .\pc-python\tests -q -p no:cacheprovider
 ```
 
-测试包括 JSON 协议校验、非法数据、回执、OSC 二进制编码、两位数拆分、超时失效、本地心跳节拍和真实 UDP 回环。
+测试包括 JSON 协议校验、非法数据、回执、OSC Int32 编码、三位数拆分和发送顺序、超时失效、本地心跳节拍和真实 UDP 回环。
 
 ## 构建单文件 EXE
 

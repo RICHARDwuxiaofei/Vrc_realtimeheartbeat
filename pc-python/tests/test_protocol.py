@@ -5,10 +5,11 @@ import pytest
 from vrc_heartbeat.protocol import (
     ProtocolError,
     build_ack,
+    clamp_osc_bpm,
     normalized_heart_rate,
     packet_latency_ms,
     parse_packet,
-    split_two_digits,
+    split_three_digits,
     stale_timeout_ms,
 )
 
@@ -66,9 +67,21 @@ def test_timeout_scales_with_phone_interval():
     assert stale_timeout_ms(30) == 75_000
 
 
-@pytest.mark.parametrize("bpm, digits", [(0, (0, 0)), (9, (0, 9)), (42, (4, 2)), (99, (9, 9)), (136, (9, 9))])
-def test_two_digit_display_is_clamped(bpm, digits):
-    assert split_two_digits(bpm) == digits
+@pytest.mark.parametrize(
+    "bpm, value, digits",
+    [
+        (-1, 0, (0, 0, 0)),
+        (0, 0, (0, 0, 0)),
+        (9, 9, (0, 0, 9)),
+        (84, 84, (0, 8, 4)),
+        (142, 142, (1, 4, 2)),
+        (999, 999, (9, 9, 9)),
+        (1_200, 999, (9, 9, 9)),
+    ],
+)
+def test_three_digit_display_is_clamped_and_split(bpm, value, digits):
+    assert clamp_osc_bpm(bpm) == value
+    assert split_three_digits(bpm) == digits
 
 
 def test_normalized_legacy_parameter_is_clamped():

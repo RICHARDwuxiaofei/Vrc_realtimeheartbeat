@@ -13,7 +13,10 @@ def self_test() -> None:
     )
     assert packet.bpm == 72
     assert b'"sequence":7' in build_ack(7, 2000)
-    assert encode_message("/avatar/parameters/HRValid", True)
+    assert encode_message("/avatar/parameters/HR_Value", 72)
+    assert encode_message("/avatar/parameters/HR_Hundreds", 0)
+    assert encode_message("/avatar/parameters/HR_Tens", 7)
+    assert encode_message("/avatar/parameters/HR_Ones", 2)
 
 
 if __name__ == "__main__":

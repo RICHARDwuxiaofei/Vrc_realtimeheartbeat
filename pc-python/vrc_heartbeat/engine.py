@@ -5,8 +5,9 @@ from typing import Callable
 
 from .protocol import (
     HeartRatePacket,
+    clamp_osc_bpm,
     normalized_heart_rate,
-    split_two_digits,
+    split_three_digits,
     stale_timeout_ms,
 )
 
@@ -80,11 +81,18 @@ class BridgeEngine:
         self.last_real_packet_ms = 0
 
     def _send_heart_rate(self, bpm: int) -> None:
-        tens, ones = split_two_digits(bpm)
-        self._send_osc("/avatar/parameters/HeartRate", bpm)
-        self._send_osc("/avatar/parameters/HeartRateNormalized", normalized_heart_rate(bpm))
+        value = clamp_osc_bpm(bpm)
+        hundreds, tens, ones = split_three_digits(value)
+
+        # HeartRateDisplay_OSC_3Digit requires these Int32 messages in this order.
+        self._send_osc("/avatar/parameters/HR_Value", value)
+        self._send_osc("/avatar/parameters/HR_Hundreds", hundreds)
         self._send_osc("/avatar/parameters/HR_Tens", tens)
         self._send_osc("/avatar/parameters/HR_Ones", ones)
+
+        # Preserve compatibility with avatars configured for the earlier bridge.
+        self._send_osc("/avatar/parameters/HeartRate", value)
+        self._send_osc("/avatar/parameters/HeartRateNormalized", normalized_heart_rate(value))
 
     def _set_valid(self, valid: bool) -> None:
         if self._valid_sent is valid:

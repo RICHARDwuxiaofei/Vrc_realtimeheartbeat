@@ -13,19 +13,27 @@ def test_real_heart_rate_sends_new_and_legacy_parameters():
     sent.clear()
     result = engine.accept(make_packet(bpm=84), 2_000)
     assert result.kind == "heart_rate"
+    assert sent[:4] == [
+        ("/avatar/parameters/HR_Value", 84),
+        ("/avatar/parameters/HR_Hundreds", 0),
+        ("/avatar/parameters/HR_Tens", 8),
+        ("/avatar/parameters/HR_Ones", 4),
+    ]
     assert ("/avatar/parameters/HeartRate", 84) in sent
-    assert ("/avatar/parameters/HR_Tens", 8) in sent
-    assert ("/avatar/parameters/HR_Ones", 4) in sent
     assert ("/avatar/parameters/HRValid", True) in sent
 
 
-def test_over_99_keeps_full_legacy_bpm_but_clamps_two_digits():
+def test_three_digit_heart_rate_is_split_without_two_digit_clamping():
     sent = []
     engine = BridgeEngine(lambda address, value: sent.append((address, value)))
     engine.accept(make_packet(bpm=136), 2_000)
+    assert sent[:4] == [
+        ("/avatar/parameters/HR_Value", 136),
+        ("/avatar/parameters/HR_Hundreds", 1),
+        ("/avatar/parameters/HR_Tens", 3),
+        ("/avatar/parameters/HR_Ones", 6),
+    ]
     assert ("/avatar/parameters/HeartRate", 136) in sent
-    assert ("/avatar/parameters/HR_Tens", 9) in sent
-    assert ("/avatar/parameters/HR_Ones", 9) in sent
 
 
 def test_diagnostic_packet_does_not_enter_avatar_parameters():

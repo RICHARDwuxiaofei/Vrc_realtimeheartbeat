@@ -81,7 +81,7 @@ $adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
 
 功耗根因、官方依据和下一轮 A/B 测试指标见 [docs/POWER_OPTIMIZATION.md](docs/POWER_OPTIMIZATION.md)。2026-07-21 的 20 分钟正常佩戴测试取得 1194 个真实样本，最大采样间隔 2005 ms、息屏交付 P95 4056 ms、最长无 callback 6016 ms，且无 WakeLock、服务重启、错误或崩溃。测试后已修复 4990–4999 ms 批次被严格 5000 ms 节流误跳过的问题，并移除 Watch/Phone 两端重复的运行时 Data Layer listener；仍需进行至少 60 分钟正式续航测试。
 
-电脑程序输出 `/avatar/parameters/HR_Tens`（Int）、`HR_Ones`（Int）、`HRValid`（Bool）和由 BPM 本地生成的 `HRPulse`（Bool），同时保留旧版 `HeartRate`、`HeartRateNormalized`、`HeartRateValid` 参数。真实数据超时阈值会根据手机上报的发送间隔自动放宽（默认 5 秒档约 12.5 秒），超时后有效状态自动变为 false。
+电脑程序会把 BPM 钳制到 `0..999`，并按顺序输出 `/avatar/parameters/HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`（全部为 OSC Int32），用于三位数 Avatar 显示；同时保留 `HRValid`、由 BPM 本地生成的 `HRPulse`，以及旧版 `HeartRate`、`HeartRateNormalized`、`HeartRateValid` 兼容参数。真实数据超时阈值会根据手机上报的发送间隔自动放宽（默认 5 秒档约 12.5 秒），超时后有效状态自动变为 false。
 
 运行 Python 电脑端测试并构建单文件 EXE：
 

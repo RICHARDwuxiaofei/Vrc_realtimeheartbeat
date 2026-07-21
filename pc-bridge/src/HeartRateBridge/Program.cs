@@ -14,8 +14,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("VRC Realtime Heartbeat")]
 [assembly: System.Reflection.AssemblyDescription("Galaxy Watch heart-rate bridge for VRChat OSC")]
 [assembly: System.Reflection.AssemblyProduct("VRC Realtime Heartbeat")]
-[assembly: System.Reflection.AssemblyVersion("0.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.4.0.0")]
 
 namespace VrcRealtimeHeartbeat
 {
@@ -135,7 +135,7 @@ namespace VrcRealtimeHeartbeat
                 CornerRadius = 16,
             };
             Controls.Add(versionPill);
-            AddLabel(versionPill, "REALTIME  v0.3", 0, 7, 108, 20, 8F, FontStyle.Bold, Color.FromArgb(76, 214, 155), ContentAlignment.MiddleCenter);
+            AddLabel(versionPill, "REALTIME  v0.4", 0, 7, 108, 20, 8F, FontStyle.Bold, Color.FromArgb(76, 214, 155), ContentAlignment.MiddleCenter);
 
             var bpmCard = CreateCard(new Point(24, 94), new Size(570, 222), Color.FromArgb(19, 31, 52));
             AddLabel(bpmCard, "LIVE HEART RATE", 24, 20, 260, 24, 9F, FontStyle.Bold, Color.FromArgb(32, 184, 255));
@@ -243,7 +243,7 @@ namespace VrcRealtimeHeartbeat
             _stopButton.FlatAppearance.BorderSize = 0;
             _stopButton.Click += delegate { StopReceiver(true); };
             settingsCard.Controls.Add(_stopButton);
-            AddLabel(settingsCard, "参数  HR_Tens · HR_Ones · HRValid · HRPulse", 22, 137, 550, 22, 8.5F, FontStyle.Regular, Color.FromArgb(125, 152, 190));
+            AddLabel(settingsCard, "三位数参数  HR_Value · HR_Hundreds · HR_Tens · HR_Ones", 22, 137, 560, 22, 8.5F, FontStyle.Regular, Color.FromArgb(125, 152, 190));
             AddLabel(settingsCard, "真实数据超时会自动发送 HRValid=false", 585, 137, 300, 22, 8.5F, FontStyle.Regular, Color.FromArgb(125, 152, 190), ContentAlignment.MiddleRight);
 
             var logCard = CreateCard(new Point(24, 522), new Size(912, 210), Color.FromArgb(17, 27, 46));
@@ -479,13 +479,18 @@ namespace VrcRealtimeHeartbeat
 
         private void SendHeartRateOsc(int bpm)
         {
-            SendOsc(OscCodec.Int("/avatar/parameters/HeartRate", bpm));
-            float normalized = (float)Math.Min(1.0, Math.Max(0.0, (bpm - 40.0) / 160.0));
-            SendOsc(OscCodec.Float("/avatar/parameters/HeartRateNormalized", normalized));
+            int value = Math.Min(999, Math.Max(0, bpm));
 
-            int twoDigitBpm = Math.Min(99, Math.Max(0, bpm));
-            SendOsc(OscCodec.Int("/avatar/parameters/HR_Tens", twoDigitBpm / 10));
-            SendOsc(OscCodec.Int("/avatar/parameters/HR_Ones", twoDigitBpm % 10));
+            // HeartRateDisplay_OSC_3Digit requires these Int32 messages in this order.
+            SendOsc(OscCodec.Int("/avatar/parameters/HR_Value", value));
+            SendOsc(OscCodec.Int("/avatar/parameters/HR_Hundreds", value / 100));
+            SendOsc(OscCodec.Int("/avatar/parameters/HR_Tens", (value % 100) / 10));
+            SendOsc(OscCodec.Int("/avatar/parameters/HR_Ones", value % 10));
+
+            // Preserve compatibility with avatars configured for the earlier bridge.
+            SendOsc(OscCodec.Int("/avatar/parameters/HeartRate", value));
+            float normalized = (float)Math.Min(1.0, Math.Max(0.0, (value - 40.0) / 160.0));
+            SendOsc(OscCodec.Float("/avatar/parameters/HeartRateNormalized", normalized));
         }
 
         private void SetHeartRateValid(bool valid)
@@ -689,17 +694,30 @@ namespace VrcRealtimeHeartbeat
     {
         public static void Run()
         {
-            byte[] heartRate = OscCodec.Int("/avatar/parameters/HeartRate", 72);
-            byte[] tens = OscCodec.Int("/avatar/parameters/HR_Tens", 7);
+            byte[] value = OscCodec.Int("/avatar/parameters/HR_Value", 142);
+            byte[] hundreds = OscCodec.Int("/avatar/parameters/HR_Hundreds", 1);
+            byte[] tens = OscCodec.Int("/avatar/parameters/HR_Tens", 4);
             byte[] ones = OscCodec.Int("/avatar/parameters/HR_Ones", 2);
             byte[] valid = OscCodec.Bool("/avatar/parameters/HRValid", true);
             byte[] pulse = OscCodec.Bool("/avatar/parameters/HRPulse", true);
 
-            AssertPacket(heartRate, "/avatar/parameters/HeartRate");
-            AssertPacket(tens, "/avatar/parameters/HR_Tens");
-            AssertPacket(ones, "/avatar/parameters/HR_Ones");
+            AssertIntPacket(value, "/avatar/parameters/HR_Value");
+            AssertIntPacket(hundreds, "/avatar/parameters/HR_Hundreds");
+            AssertIntPacket(tens, "/avatar/parameters/HR_Tens");
+            AssertIntPacket(ones, "/avatar/parameters/HR_Ones");
             AssertPacket(valid, "/avatar/parameters/HRValid");
             AssertPacket(pulse, "/avatar/parameters/HRPulse");
+        }
+
+        private static void AssertIntPacket(byte[] packet, string expectedAddress)
+        {
+            AssertPacket(packet, expectedAddress);
+            int typeTagOffset = ((Encoding.ASCII.GetByteCount(expectedAddress) + 1 + 3) / 4) * 4;
+            string typeTag = Encoding.ASCII.GetString(packet, typeTagOffset, 2);
+            if (!string.Equals(typeTag, ",i", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("OSC packet is not Int32 for " + expectedAddress);
+            }
         }
 
         private static void AssertPacket(byte[] packet, string expectedAddress)
