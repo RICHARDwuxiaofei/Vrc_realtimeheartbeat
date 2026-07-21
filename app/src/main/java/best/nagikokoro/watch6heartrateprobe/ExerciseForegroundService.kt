@@ -11,7 +11,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.Process
 import androidx.core.content.ContextCompat
 import androidx.health.services.client.ExerciseClient
@@ -19,6 +24,7 @@ import androidx.health.services.client.ExerciseUpdateCallback
 import androidx.health.services.client.HealthServices
 import androidx.health.services.client.clearUpdateCallback
 import androidx.health.services.client.data.Availability
+import androidx.health.services.client.data.BatchingMode
 import androidx.health.services.client.data.DataType
 import androidx.health.services.client.data.DataTypeAvailability
 import androidx.health.services.client.data.ExerciseConfig
@@ -31,6 +37,7 @@ import androidx.health.services.client.data.ExerciseUpdate
 import androidx.health.services.client.endExercise
 import androidx.health.services.client.getCapabilities
 import androidx.health.services.client.getCurrentExerciseInfo
+import androidx.health.services.client.overrideBatchingModesForActiveExercise
 import androidx.health.services.client.startExercise
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +49,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
 class ExerciseForegroundService : Service() {
@@ -53,8 +61,84 @@ class ExerciseForegroundService : Service() {
     private lateinit var backgroundTestRecorder: BackgroundTestRecorder
     private lateinit var exerciseClient: ExerciseClient
     private lateinit var heartRateRelay: WearHeartRateRelay
+    private lateinit var sensorManager: SensorManager
     private var staleTicker: Job? = null
     private var staleLatched = false
+    private var deliveryWakeLock: PowerManager.WakeLock? = null
+    private var wakeLockSessionId: String? = null
+    private var wakeLockRefreshAtMillis = 0L
+    private var directHeartRateSensor: Sensor? = null
+    private var directSensorRegistered = false
+    private var directLastSampleEpochMillis = 0L
+    private val directRelaySequence = AtomicLong(System.currentTimeMillis())
+    private var lastRelayedSampleEpochMillis = 0L
+    private var lastBatteryRefreshMillis = 0L
+
+    private val directHeartRateListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            if (!directSensorRegistered || event.sensor != directHeartRateSensor) return
+            val receivedEpochMillis = System.currentTimeMillis()
+            val raw = event.values.firstOrNull()?.toDouble() ?: return
+            if (!raw.isFinite() || raw !in MIN_VALID_BPM..MAX_VALID_BPM) {
+                logger.warn(
+                    "DIRECT_HR_INVALID",
+                    "Invalid direct heart-rate sensor point ignored",
+                    serviceFields("DIRECT_SENSOR_INVALID") + mapOf("rawDouble" to raw),
+                )
+                return
+            }
+            val bootEpochMillis = receivedEpochMillis - android.os.SystemClock.elapsedRealtime()
+            val sampleEpochMillis = bootEpochMillis + event.timestamp / 1_000_000L
+            if (sampleEpochMillis <= directLastSampleEpochMillis) return
+            val gapMillis = if (directLastSampleEpochMillis > 0) {
+                sampleEpochMillis - directLastSampleEpochMillis
+            } else {
+                0L
+            }
+            directLastSampleEpochMillis = sampleEpochMillis
+            val snapshot = store.state.value
+            val bpm = raw.roundToInt()
+            val sequence = directRelaySequence.incrementAndGet()
+            heartRateRelay.sendSample(
+                sequence = sequence,
+                sessionId = "direct-${snapshot.sessionStartMillis ?: "restored"}",
+                sampleEpochMillis = sampleEpochMillis,
+                receivedEpochMillis = receivedEpochMillis,
+                bpm = bpm,
+                rawBpm = raw,
+                accuracy = "SENSOR_${event.accuracy}",
+                batteryPercent = batteryPercent() ?: -1,
+                screenInteractive = isScreenInteractive(),
+            )
+            logger.info(
+                "DIRECT_HR_SAMPLE",
+                "Direct SensorManager heart-rate sample relayed",
+                serviceFields("DIRECT_SENSOR_SAMPLE") + mapOf(
+                    "sequence" to sequence,
+                    "rawDouble" to raw,
+                    "displayedBpm" to bpm,
+                    "sampleEpochMillis" to sampleEpochMillis,
+                    "receivedEpochMillis" to receivedEpochMillis,
+                    "deliveryLatencyMillis" to (receivedEpochMillis - sampleEpochMillis).coerceAtLeast(0),
+                    "gapMillis" to gapMillis,
+                    "sensorName" to event.sensor.name,
+                    "wakeUpSensor" to event.sensor.isWakeUpSensor,
+                    "screenInteractive" to isScreenInteractive(),
+                ),
+            )
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
+            logger.info(
+                "DIRECT_HR_ACCURACY_CHANGED",
+                "Direct heart-rate sensor accuracy changed",
+                serviceFields("DIRECT_SENSOR_ACCURACY") + mapOf(
+                    "sensorName" to sensor.name,
+                    "accuracy" to accuracy,
+                ),
+            )
+        }
+    }
 
     private val callback = object : ExerciseUpdateCallback {
         override fun onRegistered() {
@@ -182,6 +266,7 @@ class ExerciseForegroundService : Service() {
         backgroundTestRecorder = BackgroundTestRecorder.get(this)
         exerciseClient = HealthServices.getClient(this).exerciseClient
         heartRateRelay = WearHeartRateRelay(this, logger)
+        sensorManager = getSystemService(SensorManager::class.java)
         createNotificationChannel()
         ContextCompat.registerReceiver(
             this,
@@ -238,6 +323,8 @@ class ExerciseForegroundService : Service() {
 
     override fun onDestroy() {
         staleTicker?.cancel()
+        stopDirectHeartRateRelay("SERVICE_DESTROY")
+        releaseDeliveryWakeLock("SERVICE_DESTROY")
         runCatching { unregisterReceiver(screenReceiver) }
         runCatching { exerciseClient.clearUpdateCallbackAsync(callback) }
         store.update {
@@ -326,12 +413,16 @@ class ExerciseForegroundService : Service() {
 
         val capabilities = exerciseClient.getCapabilities()
         val supportedTypes = capabilities.supportedExerciseTypes
+        val fiveSecondBatchingSupported =
+            BatchingMode.HEART_RATE_5_SECONDS in capabilities.supportedBatchingModeOverrides
         logger.info(
             "EXERCISE_CAPABILITIES",
             "ExerciseClient capabilities queried",
             serviceFields("CAPABILITY") + mapOf(
                 "supportedExerciseTypes" to supportedTypes.sortedBy { it.name }.joinToString { it.name },
                 "supportedTypeCount" to supportedTypes.size,
+                "supportedBatchingModes" to capabilities.supportedBatchingModeOverrides.joinToString(),
+                "heartRate5SecondBatchingSupported" to fiveSecondBatchingSupported,
             ),
         )
         val preferred = listOf(
@@ -372,22 +463,45 @@ class ExerciseForegroundService : Service() {
                 screenInteractive = isScreenInteractive(),
             )
         }
-        val config = ExerciseConfig.builder(chosen)
+        val configBuilder = ExerciseConfig.builder(chosen)
             .setDataTypes(setOf(DataType.HEART_RATE_BPM))
             .setIsAutoPauseAndResumeEnabled(false)
             .setIsGpsEnabled(false)
-            .build()
+        if (fiveSecondBatchingSupported) {
+            configBuilder.setBatchingModeOverrides(setOf(BatchingMode.HEART_RATE_5_SECONDS))
+        }
+        val config = configBuilder.build()
         exerciseClient.startExercise(config)
+        lastRelayedSampleEpochMillis = 0L
+        lastBatteryRefreshMillis = 0L
         store.update { it.copy(sessionState = ExerciseSessionState.ACTIVE) }
         logger.info(
             "EXERCISE_SESSION_STARTED",
             "ExerciseClient heart-rate-only session started successfully",
-            serviceFields("START_SUCCESS") + mapOf("exerciseType" to chosen.name),
+            serviceFields("START_SUCCESS") + mapOf(
+                "exerciseType" to chosen.name,
+                "deliveryMode" to if (fiveSecondBatchingSupported) {
+                    "HEALTH_SERVICES_HEART_RATE_5_SECONDS"
+                } else {
+                    "HEALTH_SERVICES_DEFAULT_BATCHING"
+                },
+                "manualWakeLock" to false,
+                "directSensor" to false,
+            ),
         )
         startStaleTicker()
     }
 
-    private fun restoreOwnedExercise(current: ExerciseInfo) {
+    private suspend fun restoreOwnedExercise(current: ExerciseInfo) {
+        val supportedBatchingModes = exerciseClient.getCapabilities().supportedBatchingModeOverrides
+        val fiveSecondBatchingSupported = BatchingMode.HEART_RATE_5_SECONDS in supportedBatchingModes
+        if (fiveSecondBatchingSupported) {
+            exerciseClient.overrideBatchingModesForActiveExercise(
+                setOf(BatchingMode.HEART_RATE_5_SECONDS),
+            )
+        }
+        lastRelayedSampleEpochMillis = 0L
+        lastBatteryRefreshMillis = 0L
         store.update {
             it.copy(
                 serviceRunning = true,
@@ -401,7 +515,15 @@ class ExerciseForegroundService : Service() {
         logger.info(
             "EXERCISE_SESSION_RESTORED",
             "Existing app-owned ExerciseClient session restored",
-            serviceFields("RESTORE_SUCCESS") + currentInfoFields(current),
+            serviceFields("RESTORE_SUCCESS") + currentInfoFields(current) + mapOf(
+                "deliveryMode" to if (fiveSecondBatchingSupported) {
+                    "HEALTH_SERVICES_HEART_RATE_5_SECONDS"
+                } else {
+                    "HEALTH_SERVICES_DEFAULT_BATCHING"
+                },
+                "manualWakeLock" to false,
+                "directSensor" to false,
+            ),
         )
         startStaleTicker()
     }
@@ -410,18 +532,25 @@ class ExerciseForegroundService : Service() {
         val points = update.latestMetrics.getData(DataType.HEART_RATE_BPM)
             .sortedBy { it.timeDurationFromBoot }
         if (points.isEmpty()) return
-        val bootEpoch = System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()
+        val receivedEpochMillis = System.currentTimeMillis()
+        val bootEpoch = receivedEpochMillis - android.os.SystemClock.elapsedRealtime()
+        val initial = store.state.value
+        var lastSampleMillis = initial.lastSampleMillis
+        var maxGapMillis = initial.maxGapMillis
+        var acceptedCount = 0L
+        var latestRaw: Double? = null
+        var latestSampleMillis: Long? = null
+        var latestAccuracy = "UNKNOWN"
         points.forEach { point ->
             val raw = point.value
             val sampleMillis = bootEpoch + point.timeDurationFromBoot.toMillis()
-            val previous = store.state.value.lastSampleMillis
-            if (previous != null && sampleMillis <= previous) {
+            if (lastSampleMillis != null && sampleMillis <= lastSampleMillis!!) {
                 logger.debug(
                     "EXERCISE_HR_DUPLICATE_SKIPPED",
                     "Repeated or out-of-order exercise heart-rate point skipped",
                     serviceFields("SAMPLE_DUPLICATE") + mapOf(
                         "sampleEpochMillis" to sampleMillis,
-                        "previousSampleEpochMillis" to previous,
+                        "previousSampleEpochMillis" to lastSampleMillis,
                         "rawDouble" to raw,
                     ),
                 )
@@ -438,46 +567,68 @@ class ExerciseForegroundService : Service() {
                 )
                 return@forEach
             }
-            val gap = previous?.let { (sampleMillis - it).coerceAtLeast(0) } ?: 0L
-            staleLatched = false
-            val battery = batteryPercent()
-            store.update {
-                it.copy(
-                    sessionState = ExerciseSessionState.ACTIVE,
-                    bpm = raw.roundToInt(),
-                    rawBpm = raw,
-                    sampleCount = it.sampleCount + 1,
-                    lastSampleMillis = sampleMillis,
-                    maxGapMillis = maxOf(it.maxGapMillis, gap),
-                    currentBatteryPercent = battery,
-                    screenInteractive = isScreenInteractive(),
-                )
-            }
-            val snapshot = store.state.value
-            logger.info(
-                "EXERCISE_HR_SAMPLE",
-                "Real ExerciseClient heart-rate sample accepted",
-                serviceFields("SAMPLE") + mapOf(
-                    "rawDouble" to raw,
-                    "displayedBpm" to raw.roundToInt(),
-                    "sampleEpochMillis" to sampleMillis,
-                    "receivedEpochMillis" to System.currentTimeMillis(),
-                    "gapMillis" to gap,
-                    "sampleCount" to snapshot.sampleCount,
-                    "maxGapMillis" to snapshot.maxGapMillis,
-                    "accuracy" to point.accuracy,
-                ),
+            val gap = lastSampleMillis?.let { (sampleMillis - it).coerceAtLeast(0) } ?: 0L
+            maxGapMillis = maxOf(maxGapMillis, gap)
+            lastSampleMillis = sampleMillis
+            latestSampleMillis = sampleMillis
+            latestRaw = raw
+            latestAccuracy = point.accuracy.toString()
+            acceptedCount++
+        }
+        val latestSample = latestSampleMillis ?: return
+        val latestBpm = latestRaw ?: return
+        staleLatched = false
+        val interactive = isScreenInteractive()
+        val shouldRefreshBattery = initial.currentBatteryPercent == null ||
+            receivedEpochMillis - lastBatteryRefreshMillis >= BATTERY_REFRESH_INTERVAL_MILLIS
+        val battery = if (shouldRefreshBattery) batteryPercent() else initial.currentBatteryPercent
+        if (shouldRefreshBattery) lastBatteryRefreshMillis = receivedEpochMillis
+        store.update {
+            it.copy(
+                sessionState = ExerciseSessionState.ACTIVE,
+                bpm = latestBpm.roundToInt(),
+                rawBpm = latestBpm,
+                sampleCount = it.sampleCount + acceptedCount,
+                lastSampleMillis = latestSample,
+                maxGapMillis = maxGapMillis,
+                currentBatteryPercent = battery,
+                screenInteractive = interactive,
             )
+        }
+        val snapshot = store.state.value
+        logger.info(
+            "EXERCISE_HR_SAMPLE",
+            "ExerciseClient heart-rate batch accepted; latest sample selected for relay",
+            serviceFields("SAMPLE_BATCH") + mapOf(
+                "batchPointCount" to points.size,
+                "acceptedPointCount" to acceptedCount,
+                "rawDouble" to latestBpm,
+                "displayedBpm" to latestBpm.roundToInt(),
+                "sampleEpochMillis" to latestSample,
+                "receivedEpochMillis" to receivedEpochMillis,
+                "deliveryLatencyMillis" to (receivedEpochMillis - latestSample).coerceAtLeast(0),
+                "sampleCount" to snapshot.sampleCount,
+                "maxGapMillis" to snapshot.maxGapMillis,
+                "accuracy" to latestAccuracy,
+            ),
+        )
+        val relayDue = RelayIntervalPolicy.isDue(
+            previousTimestampMillis = lastRelayedSampleEpochMillis,
+            currentTimestampMillis = latestSample,
+            intervalMillis = WATCH_RELAY_INTERVAL_MILLIS,
+        )
+        if (!directSensorRegistered && relayDue) {
+            lastRelayedSampleEpochMillis = latestSample
             heartRateRelay.sendSample(
                 sequence = snapshot.sampleCount,
                 sessionId = snapshot.sessionStartMillis?.toString() ?: "unknown",
-                sampleEpochMillis = sampleMillis,
-                receivedEpochMillis = System.currentTimeMillis(),
-                bpm = raw.roundToInt(),
-                rawBpm = raw,
-                accuracy = point.accuracy.toString(),
+                sampleEpochMillis = latestSample,
+                receivedEpochMillis = receivedEpochMillis,
+                bpm = latestBpm.roundToInt(),
+                rawBpm = latestBpm,
+                accuracy = latestAccuracy,
                 batteryPercent = battery ?: -1,
-                screenInteractive = snapshot.screenInteractive,
+                screenInteractive = interactive,
             )
         }
     }
@@ -490,15 +641,22 @@ class ExerciseForegroundService : Service() {
                     ExerciseSessionState.PAUSED,
                 )
             ) {
+                updateRealtimeDiagnosticMode()
                 val snapshot = store.state.value
                 val ageMillis = snapshot.lastSampleMillis?.let {
                     (System.currentTimeMillis() - it).coerceAtLeast(0)
                 }
-                store.update {
-                    it.copy(
-                        currentBatteryPercent = batteryPercent(),
-                        screenInteractive = isScreenInteractive(),
-                    )
+                val now = System.currentTimeMillis()
+                if (snapshot.currentBatteryPercent == null ||
+                    now - lastBatteryRefreshMillis >= BATTERY_REFRESH_INTERVAL_MILLIS
+                ) {
+                    lastBatteryRefreshMillis = now
+                    store.update {
+                        it.copy(
+                            currentBatteryPercent = batteryPercent(),
+                            screenInteractive = isScreenInteractive(),
+                        )
+                    }
                 }
                 if (ageMillis != null && ageMillis >= STALE_AFTER_MILLIS && !staleLatched) {
                     staleLatched = true
@@ -514,10 +672,20 @@ class ExerciseForegroundService : Service() {
                         ),
                     )
                 }
-                if (backgroundTestRecorder.tick()) {
-                    backgroundTestRecorder.finish("TARGET_DURATION_REACHED")
-                    requestEnd("TEST_DURATION_REACHED")
-                    break
+                when (backgroundTestRecorder.tick()) {
+                    BackgroundTestTickResult.COMPLETE -> {
+                        releaseDeliveryWakeLock("TARGET_COMPLETE")
+                        backgroundTestRecorder.finish("TARGET_DURATION_REACHED")
+                        requestEnd("TEST_DURATION_REACHED")
+                        break
+                    }
+                    BackgroundTestTickResult.DRAIN_TIMEOUT -> {
+                        releaseDeliveryWakeLock("TARGET_DRAIN_TIMEOUT")
+                        backgroundTestRecorder.finish("TARGET_DURATION_DRAIN_TIMEOUT")
+                        requestEnd("TEST_DURATION_DRAIN_TIMEOUT")
+                        break
+                    }
+                    null -> Unit
                 }
                 delay(1_000L)
             }
@@ -534,6 +702,8 @@ class ExerciseForegroundService : Service() {
             )
             return
         }
+        stopDirectHeartRateRelay("REQUEST_END_$reason")
+        releaseDeliveryWakeLock("REQUEST_END_$reason")
         if (backgroundTestRecorder.state.value.isActive) {
             backgroundTestRecorder.finish(
                 reason = if (reason == "TEST_DURATION_REACHED") "TARGET_DURATION_REACHED" else reason,
@@ -587,8 +757,150 @@ class ExerciseForegroundService : Service() {
         }
     }
 
+    /**
+     * Normal relay mode intentionally relies only on Health Services batching.
+     * The raw wake-up sensor and partial wake lock are retained solely for the
+     * explicit 10-minute high-power diagnostic so old timing experiments remain
+     * reproducible without penalizing day-to-day use.
+     */
+    private fun updateRealtimeDiagnosticMode() {
+        val test = backgroundTestRecorder.state.value
+        val highPowerDiagnostic = !BuildConfig.PRODUCTION_EDITION && test.isActive && runCatching {
+            BackgroundTestType.valueOf(test.testType).requiresDeliveryWakeLock
+        }.getOrDefault(false)
+        if (highPowerDiagnostic) {
+            startDirectHeartRateRelay()
+            updateDeliveryWakeLock()
+        } else {
+            stopDirectHeartRateRelay("LOW_POWER_HEALTH_SERVICES_MODE")
+            releaseDeliveryWakeLock("LOW_POWER_HEALTH_SERVICES_MODE")
+        }
+    }
+
+    private fun updateDeliveryWakeLock() {
+        val exercise = store.state.value
+        if (exercise.sessionState !in setOf(ExerciseSessionState.ACTIVE, ExerciseSessionState.PAUSED)) {
+            releaseDeliveryWakeLock("EXERCISE_NOT_ACTIVE")
+            return
+        }
+        val test = backgroundTestRecorder.state.value
+        val isControlledExperiment = test.isActive && runCatching {
+            BackgroundTestType.valueOf(test.testType).requiresDeliveryWakeLock
+        }.getOrDefault(false)
+        val mode = if (isControlledExperiment) "REALTIME_DELIVERY_TEST" else "CONTINUOUS_REALTIME_RELAY"
+        val sessionKey = "$mode:${if (test.isActive) test.sessionId else exercise.sessionStartMillis ?: "RESTORED"}"
+        val now = System.currentTimeMillis()
+        val held = deliveryWakeLock?.isHeld == true
+        if (held && wakeLockSessionId == sessionKey && now < wakeLockRefreshAtMillis) return
+        releaseDeliveryWakeLock(if (held) "SCHEDULED_REFRESH" else "NEW_DELIVERY_SESSION")
+        val timeoutMillis = if (isControlledExperiment) {
+            REALTIME_TEST_WAKE_LOCK_TIMEOUT_MILLIS
+        } else {
+            REALTIME_RELAY_WAKE_LOCK_TIMEOUT_MILLIS
+        }
+        val wakeLock = getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "$packageName:$mode",
+        ).apply {
+            setReferenceCounted(false)
+            acquire(timeoutMillis)
+        }
+        deliveryWakeLock = wakeLock
+        wakeLockSessionId = sessionKey
+        wakeLockRefreshAtMillis = if (isControlledExperiment) {
+            Long.MAX_VALUE
+        } else {
+            now + REALTIME_RELAY_WAKE_LOCK_REFRESH_MILLIS
+        }
+        backgroundTestRecorder.recordWakeLock(
+            acquired = true,
+            reason = mode,
+            timeoutMillis = timeoutMillis,
+        )
+        logger.info(
+            "DELIVERY_WAKE_LOCK_ACQUIRED",
+            "Bounded partial wake lock acquired for screen-off real-time delivery",
+            serviceFields("WAKE_LOCK_ACQUIRE") + mapOf(
+                "sessionKey" to sessionKey,
+                "mode" to mode,
+                "timeoutMillis" to timeoutMillis,
+                "refreshAtMillis" to wakeLockRefreshAtMillis,
+            ),
+        )
+    }
+
+    private fun releaseDeliveryWakeLock(reason: String) {
+        val wakeLock = deliveryWakeLock
+        if (wakeLock?.isHeld == true) {
+            backgroundTestRecorder.recordWakeLock(acquired = false, reason = reason)
+            runCatching { wakeLock.release() }
+            logger.info(
+                "DELIVERY_WAKE_LOCK_RELEASED",
+                "Partial wake lock released",
+                serviceFields("WAKE_LOCK_RELEASE") + mapOf("reason" to reason),
+            )
+        }
+        deliveryWakeLock = null
+        wakeLockSessionId = null
+        wakeLockRefreshAtMillis = 0L
+    }
+
+    private fun startDirectHeartRateRelay() {
+        if (directSensorRegistered) return
+        val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE, true)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE, false)
+        if (sensor == null) {
+            logger.warn(
+                "DIRECT_HR_SENSOR_UNAVAILABLE",
+                "No direct heart-rate sensor was available; retaining ExerciseClient relay fallback",
+                serviceFields("DIRECT_SENSOR_MISSING"),
+            )
+            return
+        }
+        directHeartRateSensor = sensor
+        directLastSampleEpochMillis = 0L
+        directSensorRegistered = sensorManager.registerListener(
+            directHeartRateListener,
+            sensor,
+            DIRECT_HR_SAMPLING_PERIOD_US,
+            0,
+        )
+        logger.info(
+            if (directSensorRegistered) "DIRECT_HR_SENSOR_REGISTERED" else "DIRECT_HR_SENSOR_REGISTER_FAILED",
+            if (directSensorRegistered) {
+                "Direct heart-rate sensor registered with zero report latency"
+            } else {
+                "Direct heart-rate sensor registration failed; retaining ExerciseClient relay fallback"
+            },
+            serviceFields("DIRECT_SENSOR_REGISTER") + mapOf(
+                "sensorName" to sensor.name,
+                "vendor" to sensor.vendor,
+                "wakeUpSensor" to sensor.isWakeUpSensor,
+                "fifoMaxEventCount" to sensor.fifoMaxEventCount,
+                "samplingPeriodUs" to DIRECT_HR_SAMPLING_PERIOD_US,
+                "maxReportLatencyUs" to 0,
+                "registered" to directSensorRegistered,
+            ),
+        )
+    }
+
+    private fun stopDirectHeartRateRelay(reason: String) {
+        if (!directSensorRegistered && directHeartRateSensor == null) return
+        runCatching { sensorManager.unregisterListener(directHeartRateListener) }
+        logger.info(
+            "DIRECT_HR_SENSOR_UNREGISTERED",
+            "Direct heart-rate sensor listener unregistered",
+            serviceFields("DIRECT_SENSOR_UNREGISTER") + mapOf("reason" to reason),
+        )
+        directSensorRegistered = false
+        directHeartRateSensor = null
+        directLastSampleEpochMillis = 0L
+    }
+
     private fun finishAfterExternalEnd(reason: String) {
         if (!endInFlight.compareAndSet(false, true)) return
+        stopDirectHeartRateRelay("EXTERNAL_END_$reason")
+        releaseDeliveryWakeLock("EXTERNAL_END_$reason")
         backgroundTestRecorder.finish(reason, abnormal = true)
         serviceScope.launch {
             clearCallback(reason)
@@ -628,6 +940,8 @@ class ExerciseForegroundService : Service() {
     }
 
     private fun failAndStop(eventCode: String, failure: Throwable) {
+        stopDirectHeartRateRelay("FAIL_$eventCode")
+        releaseDeliveryWakeLock("FAIL_$eventCode")
         backgroundTestRecorder.recordError(eventCode, failure)
         backgroundTestRecorder.finish(eventCode, abnormal = true)
         logger.error(
@@ -652,6 +966,8 @@ class ExerciseForegroundService : Service() {
     }
 
     private fun finishWithoutExercise(reason: String) {
+        stopDirectHeartRateRelay("NO_EXERCISE_$reason")
+        releaseDeliveryWakeLock("NO_EXERCISE_$reason")
         backgroundTestRecorder.finish(reason, abnormal = true)
         store.update {
             it.copy(
@@ -695,17 +1011,19 @@ class ExerciseForegroundService : Service() {
         manager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL,
-                "Heart-rate screen-off test",
+                "息屏心率节能传输",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Shows that the ExerciseClient heart-rate test is still active"
+                description = "通过 Health Services 约每 5 秒交付最新心率，不常驻唤醒 CPU"
                 setShowBadge(false)
             },
         )
     }
 
     private fun buildNotification(bpm: Int?): Notification {
-        val openIntent = Intent(this, MainActivity::class.java).apply {
+        val openIntent = requireNotNull(packageManager.getLaunchIntentForPackage(packageName)) {
+            "No launcher activity is declared for $packageName"
+        }.apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
@@ -715,9 +1033,9 @@ class ExerciseForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, NOTIFICATION_CHANNEL)
-            .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("ExerciseClient screen-off test")
-            .setContentText(bpm?.let { "$it BPM · session active" } ?: "Waiting for heart rate")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("后台节能心率运行中")
+            .setContentText(bpm?.let { "$it BPM · 约 5 秒更新" } ?: "正在等待心率 · Health Services 节能模式")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -734,6 +1052,12 @@ class ExerciseForegroundService : Service() {
         private const val MIN_VALID_BPM = 20.0
         private const val MAX_VALID_BPM = 300.0
         private const val STALE_AFTER_MILLIS = 10_000L
+        private const val REALTIME_TEST_WAKE_LOCK_TIMEOUT_MILLIS = 12 * 60_000L
+        private const val REALTIME_RELAY_WAKE_LOCK_TIMEOUT_MILLIS = 15 * 60_000L
+        private const val REALTIME_RELAY_WAKE_LOCK_REFRESH_MILLIS = 10 * 60_000L
+        private const val DIRECT_HR_SAMPLING_PERIOD_US = 1_000_000
+        private const val WATCH_RELAY_INTERVAL_MILLIS = 5_000L
+        private const val BATTERY_REFRESH_INTERVAL_MILLIS = 60_000L
         private val DIRECT_EXECUTOR = Executor { it.run() }
 
         fun requestStart(context: Context) {

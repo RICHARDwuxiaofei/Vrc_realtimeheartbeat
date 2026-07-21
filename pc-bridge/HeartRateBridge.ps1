@@ -39,10 +39,21 @@ function New-OscBoolPacket([string]$Address, [bool]$Value) {
 }
 
 if ($SelfTest) {
-    $packet = New-OscIntPacket '/avatar/parameters/HeartRate' 72
-    $address = [Text.Encoding]::ASCII.GetString($packet, 0, 28).Trim([char]0)
-    if ($address -ne '/avatar/parameters/HeartRate' -or $packet.Length % 4 -ne 0) {
-        throw 'OSC packet self-test failed.'
+    $cases = @(
+        @('/avatar/parameters/HR_Value', 142),
+        @('/avatar/parameters/HR_Hundreds', 1),
+        @('/avatar/parameters/HR_Tens', 4),
+        @('/avatar/parameters/HR_Ones', 2)
+    )
+    foreach ($case in $cases) {
+        $packet = New-OscIntPacket $case[0] $case[1]
+        $address = [Text.Encoding]::ASCII.GetString($packet).Split([char]0)[0]
+        $addressLength = [Text.Encoding]::ASCII.GetByteCount($case[0]) + 1
+        $typeTagOffset = [int]([Math]::Ceiling($addressLength / 4.0) * 4)
+        $typeTag = [Text.Encoding]::ASCII.GetString($packet, $typeTagOffset, 2)
+        if ($address -ne $case[0] -or $typeTag -ne ',i' -or $packet.Length % 4 -ne 0) {
+            throw "OSC Int32 packet self-test failed for $($case[0])."
+        }
     }
     Write-Output 'HeartRateBridge protocol self-test: PASS'
     exit 0
@@ -182,6 +193,19 @@ function Set-HeartRateValid([bool]$Valid) {
     $script:validSent = $Valid
 }
 
+function Send-HeartRateOsc([int]$Bpm) {
+    $value = [Math]::Min(999, [Math]::Max(0, $Bpm))
+
+    Send-Osc (New-OscIntPacket '/avatar/parameters/HR_Value' $value)
+    Send-Osc (New-OscIntPacket '/avatar/parameters/HR_Hundreds' ([int][Math]::Floor($value / 100)))
+    Send-Osc (New-OscIntPacket '/avatar/parameters/HR_Tens' ([int][Math]::Floor(($value % 100) / 10)))
+    Send-Osc (New-OscIntPacket '/avatar/parameters/HR_Ones' ($value % 10))
+
+    Send-Osc (New-OscIntPacket '/avatar/parameters/HeartRate' $value)
+    $normalized = [single][Math]::Min(1.0, [Math]::Max(0.0, ($value - 40.0) / 160.0))
+    Send-Osc (New-OscFloatPacket '/avatar/parameters/HeartRateNormalized' $normalized)
+}
+
 $startButton.Add_Click({
     try {
         if ($null -ne $script:receiver) { $script:receiver.Close() }
@@ -239,9 +263,7 @@ $timer.Add_Tick({
             $null = $script:receiver.Send($ackBytes, $ackBytes.Length, $sender)
 
             if ($isRealHeartRate) {
-                Send-Osc (New-OscIntPacket '/avatar/parameters/HeartRate' $bpm)
-                $normalized = [single][Math]::Min(1.0, [Math]::Max(0.0, ($bpm - 40.0) / 160.0))
-                Send-Osc (New-OscFloatPacket '/avatar/parameters/HeartRateNormalized' $normalized)
+                Send-HeartRateOsc $bpm
                 if (-not $script:validSent) { Set-HeartRateValid $true }
             }
             Add-Log "type=$($packet.type) seq=$($packet.sequence) bpm=$bpm phone=$($script:phoneAddress) latency=${latency}ms ack=sent"

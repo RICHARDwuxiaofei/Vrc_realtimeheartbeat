@@ -23,6 +23,22 @@ android {
         versionName = "1.0.0"
     }
 
+    flavorDimensions += "edition"
+    productFlavors {
+        create("diagnostic") {
+            dimension = "edition"
+            manifestPlaceholders["launcherActivity"] = ".MainActivity"
+            manifestPlaceholders["appLabel"] = "Watch6 心率测试"
+            buildConfigField("boolean", "PRODUCTION_EDITION", "false")
+        }
+        create("production") {
+            dimension = "edition"
+            manifestPlaceholders["launcherActivity"] = ".ProductionMainActivity"
+            manifestPlaceholders["appLabel"] = "心率传输"
+            buildConfigField("boolean", "PRODUCTION_EDITION", "true")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -66,5 +82,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-wearable:20.0.1")
     implementation("com.google.guava:guava:33.6.0-android")
 
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling:1.9.3")
 }

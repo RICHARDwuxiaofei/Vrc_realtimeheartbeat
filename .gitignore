@@ -8,6 +8,11 @@ captures/
 .cxx/
 app/build/
 mobile/build/
+pc-python/.venv/
+pc-python/.pytest_cache/
+pc-python/build/
+**/__pycache__/
+*.pyc
 
 # Local device test output and machine-specific reports
 test-results/
