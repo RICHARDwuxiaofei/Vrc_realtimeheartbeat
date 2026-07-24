@@ -345,7 +345,7 @@ private fun RelayModeSelector(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            if (mode == WatchRelayMode.REALTIME_1_SECOND) "1 秒" else "5 秒",
+                            "${mode.intervalSeconds} 秒",
                             color = if (selected) Color.White else Color(0xFFBDBDBD),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,

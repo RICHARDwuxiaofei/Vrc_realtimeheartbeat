@@ -48,8 +48,19 @@ class ExerciseSessionStore private constructor(context: Context) {
     @Synchronized
     fun update(transform: (ExerciseSessionSnapshot) -> ExerciseSessionSnapshot) {
         val next = transform(_state.value)
+        if (next == _state.value) return
         _state.value = next
         persist(next)
+    }
+
+    /**
+     * Updates live UI/service state without scheduling a SharedPreferences write.
+     * Session boundaries still use [update], so process restoration remains durable.
+     */
+    @Synchronized
+    fun updateInMemory(transform: (ExerciseSessionSnapshot) -> ExerciseSessionSnapshot) {
+        val next = transform(_state.value)
+        if (next != _state.value) _state.value = next
     }
 
     fun markActivity(phase: String, interactive: Boolean) = update {

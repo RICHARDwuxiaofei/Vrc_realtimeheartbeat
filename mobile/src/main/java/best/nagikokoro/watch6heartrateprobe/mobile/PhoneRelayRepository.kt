@@ -138,9 +138,14 @@ object PhoneRelayRepository {
         val sampleMillis = json.optLong("sampleEpochMillis", 0L).takeIf { it > 0 }
         val watchRelayInterval = json.optInt("watchRelayIntervalSeconds", 0).takeIf { it in 1..30 }
         val watchRelayMode = json.optString("watchRelayMode").takeIf { it.isNotBlank() }
+        val watchAckRequested = json.optBoolean("watchAckRequested", true)
+        val effectiveForwardInterval = maxOf(
+            mutableState.value.forwardIntervalSeconds,
+            watchRelayInterval ?: 0,
+        )
         json.put("phoneReceivedEpochMillis", phoneReceiveMillis)
         json.put("phoneLocalIp", findLocalIpv4())
-        json.put("phoneForwardIntervalSeconds", mutableState.value.forwardIntervalSeconds)
+        json.put("phoneForwardIntervalSeconds", effectiveForwardInterval)
         update {
             it.copy(
                 watchNodeId = sourceNodeId,
@@ -160,7 +165,7 @@ object PhoneRelayRepository {
             update { it.copy(throttledCount = it.throttledCount + 1) }
             return
         }
-        forward(context, sourceNodeId, json, isRealHeartRate)
+        forward(context, sourceNodeId, json, isRealHeartRate, watchAckRequested)
     }
 
     fun sendTestPacket() {
@@ -179,7 +184,7 @@ object PhoneRelayRepository {
             .put("watchBatteryPercent", -1)
             .put("watchScreenInteractive", true)
             .put("phoneLocalIp", findLocalIpv4())
-        forward(context, null, json, isHeartRate = false)
+        forward(context, null, json, isHeartRate = false, watchAckRequested = false)
     }
 
     @Synchronized
@@ -195,7 +200,13 @@ object PhoneRelayRepository {
         return true
     }
 
-    private fun forward(context: Context, watchNodeId: String?, json: JSONObject, isHeartRate: Boolean) {
+    private fun forward(
+        context: Context,
+        watchNodeId: String?,
+        json: JSONObject,
+        isHeartRate: Boolean,
+        watchAckRequested: Boolean,
+    ) {
         val target = mutableState.value
         if (!target.forwardingEnabled) {
             update { it.copy(lastError = "已暂停发送到电脑") }
@@ -203,7 +214,9 @@ object PhoneRelayRepository {
         }
         if (target.targetIp.isBlank()) {
             update { it.copy(lastError = "请先填写电脑 IP") }
-            if (watchNodeId != null) sendWatchAck(context, watchNodeId, json.optLong("sequence"), false, "电脑 IP 未设置")
+            if (watchNodeId != null && watchAckRequested) {
+                sendWatchAck(context, watchNodeId, json.optLong("sequence"), false, "电脑 IP 未设置")
+            }
             return
         }
         var shouldStartWorker = false
@@ -217,6 +230,7 @@ object PhoneRelayRepository {
                 target.targetIp,
                 target.targetPort,
                 isHeartRate,
+                watchAckRequested,
             )
             if (!forwardWorkerRunning) {
                 forwardWorkerRunning = true
@@ -299,7 +313,7 @@ object PhoneRelayRepository {
                 lastError = error.ifBlank { "--" },
             )
         }
-        if (request.watchNodeId != null) {
+        if (request.watchNodeId != null && request.watchAckRequested) {
             sendWatchAck(request.context, request.watchNodeId, sequence, pcAck, error)
         }
     }
@@ -363,6 +377,7 @@ object PhoneRelayRepository {
         val targetIp: String,
         val targetPort: Int,
         val isHeartRate: Boolean,
+        val watchAckRequested: Boolean,
     )
 
     private const val TAG = "HR_RELAY"

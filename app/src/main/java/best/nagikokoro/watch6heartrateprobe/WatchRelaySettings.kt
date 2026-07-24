@@ -19,15 +19,23 @@ enum class WatchRelayMode(
     POWER_SAVER_5_SECONDS(
         intervalSeconds = 5,
         displayName = "5 秒省电",
-        description = "Health Services 批量交付，适合长时间运行",
+        description = "心率变化约 5 秒送达，稳定时自动降低重复传输",
+    ),
+    ULTRA_POWER_SAVER_10_SECONDS(
+        intervalSeconds = 10,
+        displayName = "10 秒超省电",
+        description = "减少手表与手机通信，适合长时间挂 VRChat",
     );
 
     companion object {
         fun fromStoredValue(value: String?): WatchRelayMode =
             entries.firstOrNull { it.name == value } ?: POWER_SAVER_5_SECONDS
 
-        fun fromIntervalSeconds(seconds: Int): WatchRelayMode =
-            if (seconds <= 1) REALTIME_1_SECOND else POWER_SAVER_5_SECONDS
+        fun fromIntervalSeconds(seconds: Int): WatchRelayMode = when {
+            seconds <= 1 -> REALTIME_1_SECOND
+            seconds <= 5 -> POWER_SAVER_5_SECONDS
+            else -> ULTRA_POWER_SAVER_10_SECONDS
+        }
     }
 }
 

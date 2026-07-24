@@ -62,6 +62,10 @@ class DiagnosticLogger private constructor(context: Context) {
         parameters: Map<String, Any?>,
         throwable: Throwable? = null,
     ) {
+        // Production keeps warnings and failures, but avoids per-sample Logcat,
+        // allocation and synchronous file flushes on the watch hot path.
+        if (BuildConfig.PRODUCTION_EDITION && (level == LogLevel.DEBUG || level == LogLevel.INFO)) return
+
         val entry = DiagnosticEntry(
             timestampMillis = System.currentTimeMillis(),
             level = level,

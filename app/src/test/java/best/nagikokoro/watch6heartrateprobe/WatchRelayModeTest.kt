@@ -16,5 +16,6 @@ class WatchRelayModeTest {
     fun intervalMapsToSupportedModes() {
         assertEquals(WatchRelayMode.REALTIME_1_SECOND, WatchRelayMode.fromIntervalSeconds(1))
         assertEquals(WatchRelayMode.POWER_SAVER_5_SECONDS, WatchRelayMode.fromIntervalSeconds(5))
+        assertEquals(WatchRelayMode.ULTRA_POWER_SAVER_10_SECONDS, WatchRelayMode.fromIntervalSeconds(10))
     }
 }

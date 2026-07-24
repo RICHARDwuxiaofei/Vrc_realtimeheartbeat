@@ -51,11 +51,11 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 同一份源码产生两个 APK：
 
 - `diagnosticDebug`：测试版，保留 MeasureClient 探针、息屏/续航测试、原始事件、统计报告和链路诊断。
-- `productionDebug`：日常正式版，固定使用 ExerciseClient，并提供“1 秒实时 / 5 秒省电”两个启动前可选档位。
+- `productionDebug`：日常正式版，固定使用 ExerciseClient，并提供“1 秒实时 / 5 秒省电 / 10 秒超省电”三个启动前可选档位。
 
 两版为了和手机 Wear Data Layer 通信，必须使用同一个 applicationId 和签名。因此不能在同一块手表上同时安装；互相覆盖就是升级或回退。当前“正式版”是功能正式版，仍为 debug 签名，不是商店发布签名。
 
-正式版默认使用 5 秒省电档；只有用户明确选择 1 秒实时档时才注册约 1 Hz 直接心率传感器并使用有界滚动 `PARTIAL_WAKE_LOCK`。停止、异常、服务销毁和 Exercise 外部结束都会释放该锁。
+正式版默认使用 5 秒省电档；10 秒超省电档进一步减少 Data Layer 通信。只有用户明确选择 1 秒实时档时才注册约 1 Hz 直接心率传感器并使用有界滚动 `PARTIAL_WAKE_LOCK`。停止、异常、服务销毁和 Exercise 外部结束都会释放该锁。
 
 ### 手机端 `mobile/`
 
@@ -77,7 +77,7 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 5. 手表打开“心率传输”，向下滑动并点击“开始传输”，首次运行授予心率和后台健康权限。
 6. 可以直接返回表盘并息屏；ForegroundService 和 Exercise 会话应继续运行。
 7. VRChat Action Menu 中开启 OSC。电脑默认向 `127.0.0.1:9000` 发送。
-8. 正常时电脑约每 5 秒收到一份最新 BPM；这不代表手表内部只有 0.2 Hz 采样，Health Services 回调可以包含一批按 `sampleEpochMillis` 排列的真实样本。
+8. 默认档电脑在 BPM 变化时约每 5 秒收到一份最新值，稳定值约每 10 秒保活；10 秒档对应约 10/20 秒。这不代表手表内部按这个频率采样，Health Services 回调可以包含一批按 `sampleEpochMillis` 排列的真实样本。
 
 停止时优先在手表正式版中点击“停止传输”。不要通过强制停止服务代替正常停止 Exercise 会话。
 

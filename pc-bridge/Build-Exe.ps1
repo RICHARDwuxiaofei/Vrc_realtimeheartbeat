@@ -73,7 +73,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) {
 }
 
 if (-not $SkipSelfTest) {
-    $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+    $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru -WindowStyle Hidden
     if ($process.ExitCode -ne 0) {
         throw "EXE protocol self-test failed with exit code $($process.ExitCode)"
     }

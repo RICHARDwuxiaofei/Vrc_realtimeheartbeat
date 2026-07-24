@@ -460,6 +460,7 @@ class HeartRateViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 activityPhase = event,
                 screenInteractive = application.isScreenInteractive(),
+                nowMillis = System.currentTimeMillis(),
                 pid = Process.myPid(),
             )
         }
@@ -689,7 +690,13 @@ class HeartRateViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                     transitionTo(ProbeStatus.DATA_STALE, "DATA_STALE_TIMEOUT")
                 }
-                delay(1_000)
+                delay(
+                    if (BuildConfig.PRODUCTION_EDITION && !interactive) {
+                        PRODUCTION_SCREEN_OFF_UI_TICK_MILLIS
+                    } else {
+                        INTERACTIVE_UI_TICK_MILLIS
+                    },
+                )
             }
         }
     }
@@ -722,5 +729,7 @@ class HeartRateViewModel(application: Application) : AndroidViewModel(applicatio
 
     companion object {
         private const val STALE_AFTER_SECONDS = 10L
+        private const val INTERACTIVE_UI_TICK_MILLIS = 1_000L
+        private const val PRODUCTION_SCREEN_OFF_UI_TICK_MILLIS = 15_000L
     }
 }

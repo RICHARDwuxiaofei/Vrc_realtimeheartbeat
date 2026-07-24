@@ -77,9 +77,9 @@ $adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
 2. 在手机安装并打开 `mobile-debug.apk`，填写电脑界面显示的局域网 IPv4 和端口 `9123`。
 3. 手机点击“发送测试包”，确认手机和电脑的回执计数增加。
 4. 手表点击 `Send phone / PC link test`。测试包必须经过三端并返回回执，但不会进入 VRChat。
-5. 真正测量前先在手表正式版选择发送频率，再启动“后台连续”：`5 秒省电`（默认）使用 Health Services `HEART_RATE_5_SECONDS`，不持有 WakeLock、不注册直接传感器；`1 秒实时`使用约 1 Hz 的直接心率传感器和有界滚动 WakeLock，息屏延迟更低但明显更耗电。手机到电脑可独立选择 `1/2/5/10/30 秒`并暂停/恢复。要得到真正约 1 秒一份的新 BPM，手表和手机两端都要选择 1 秒；手机档位快于手表档位时只能等待下一份手表数据。
+5. 真正测量前先在手表正式版选择发送频率，再启动“后台连续”：`5 秒省电`（默认）与 `10 秒超省电`都使用 Health Services 批量交付，不持有 WakeLock、不注册直接传感器；`1 秒实时`使用约 1 Hz 的直接心率传感器和有界滚动 WakeLock，息屏延迟更低但明显更耗电。省电档在 BPM 不变时自动把重复保活放宽到双倍间隔。手机到电脑可独立选择 `1/2/5/10/30 秒`并暂停/恢复。要得到真正约 1 秒一份的新 BPM，手表和手机两端都要选择 1 秒；手机档位快于手表档位时只能等待下一份手表数据。
 
-功耗根因、官方依据和下一轮 A/B 测试指标见 [docs/POWER_OPTIMIZATION.md](docs/POWER_OPTIMIZATION.md)。2026-07-21 的 5 秒省电档 20 分钟正常佩戴测试取得 1194 个真实样本，最大采样间隔 2005 ms、息屏交付 P95 4056 ms、最长无 callback 6016 ms，且无 WakeLock、服务重启、错误或崩溃。测试后已修复 4990–4999 ms 批次被严格 5000 ms 节流误跳过的问题，并移除 Watch/Phone 两端重复的运行时 Data Layer listener；1 秒实时档已有短时三端约 1 Hz 验证，但两个档位仍分别需要长时间续航和稳定性验证。
+功耗根因、官方依据和下一轮 A/B 测试指标见 [docs/POWER_OPTIMIZATION.md](docs/POWER_OPTIMIZATION.md)。2026-07-21 的 5 秒省电档 20 分钟正常佩戴测试取得 1194 个真实样本，最大采样间隔 2005 ms、息屏交付 P95 4056 ms、最长无 callback 6016 ms，且无 WakeLock、服务重启、错误或崩溃。2026-07-23 的第二轮代码优化又移除了正式版逐批日志 flush、逐批 SharedPreferences 写入、每 30 秒节点重查和逐包 ACK，并为手机离线发现增加退避；这些改动仍需 60 分钟真机 A/B 验证。
 
 电脑程序会把 BPM 钳制到 `0..999`，并按顺序输出 `/avatar/parameters/HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`（全部为 OSC Int32），用于三位数 Avatar 显示；同时保留 `HRValid`、由 BPM 本地生成的 `HRPulse`，以及旧版 `HeartRate`、`HeartRateNormalized`、`HeartRateValid` 兼容参数。真实数据超时阈值会根据手机上报的发送间隔自动放宽（默认 5 秒档约 12.5 秒），超时后有效状态自动变为 false。
 
