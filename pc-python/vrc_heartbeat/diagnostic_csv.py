@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 import shutil
-from typing import Any, TextIO
+from typing import Any, Iterator, TextIO
 
 from .analytics import HeartRateSample
 from .settings import settings_path
@@ -27,6 +27,7 @@ FIELDNAMES = [
     "phone_network_type",
     "phone_vpn_active",
 ]
+TAIL_READ_CHUNK_BYTES = 64 * 1_024
 
 
 class DiagnosticCsvStore:
@@ -103,25 +104,50 @@ class DiagnosticCsvStore:
         cutoff = now_ms - max(1, min(10, minutes)) * 60_000
         samples: list[HeartRateSample] = []
         try:
-            with self.path.open("r", newline="", encoding="utf-8") as handle:
-                for row in csv.DictReader(handle):
-                    try:
-                        epoch_ms = int(row["epoch_ms"])
-                        if epoch_ms < cutoff:
-                            continue
-                        samples.append(
-                            HeartRateSample(
-                                epoch_ms=epoch_ms,
-                                bpm=int(row["bpm"]),
-                                sender=row["phone_ip"],
-                                latency_ms=int(row["latency_ms"]),
-                            )
+            for line in self._data_lines_from_newest():
+                try:
+                    row = next(csv.DictReader([line], fieldnames=FIELDNAMES))
+                    epoch_ms = int(row["epoch_ms"])
+                    if epoch_ms < cutoff:
+                        break
+                    samples.append(
+                        HeartRateSample(
+                            epoch_ms=epoch_ms,
+                            bpm=int(row["bpm"]),
+                            sender=row["phone_ip"],
+                            latency_ms=int(row["latency_ms"]),
                         )
-                    except (KeyError, TypeError, ValueError):
-                        continue
-        except OSError:
+                    )
+                except (csv.Error, KeyError, StopIteration, TypeError, ValueError):
+                    continue
+        except (OSError, UnicodeError):
             return ()
+        samples.reverse()
         return tuple(samples)
+
+    def _data_lines_from_newest(self) -> Iterator[str]:
+        """Yield complete CSV rows from the file tail without scanning old history."""
+        with self.path.open("rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            carry = b""
+            while position > 0:
+                read_size = min(TAIL_READ_CHUNK_BYTES, position)
+                position -= read_size
+                handle.seek(position)
+                block = handle.read(read_size) + carry
+                lines = block.splitlines()
+                if position > 0:
+                    carry = lines.pop(0) if lines else block
+                else:
+                    carry = b""
+                for raw_line in reversed(lines):
+                    if not raw_line:
+                        continue
+                    line = raw_line.decode("utf-8")
+                    if line == ",".join(FIELDNAMES):
+                        return
+                    yield line
 
     def export(self, destination: Path) -> None:
         if self._handle is not None:

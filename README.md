@@ -4,6 +4,8 @@
 
 换电脑继续开发时，先阅读 [docs/NEW_PC_HANDOFF.md](docs/NEW_PC_HANDOFF.md)。它包含当前链路、三端用法、环境安装、构建测试、GitHub 产物位置和后续任务。
 
+版本变化与本轮复核修正见 [CHANGELOG.md](CHANGELOG.md)。
+
 Samsung Galaxy Watch6 心率采集与 VRChat OSC 中转项目。包含四个可独立构建的组件：
 
 - `app`：Wear OS 应用。`diagnostic` 是保留完整测试与报告功能的测试版，`production` 是只保留日常启停和状态显示的正式版；两版都由健康类型 `ForegroundService` 持有 `ExerciseClient`。
@@ -83,7 +85,7 @@ $adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
 
 电脑程序会把 BPM 钳制到 `0..999`，并按顺序输出 `/avatar/parameters/HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`（全部为 OSC Int32），用于三位数 Avatar 显示；同时保留 `HRValid`、由 BPM 本地生成的 `HRPulse`，以及旧版 `HeartRate`、`HeartRateNormalized`、`HeartRateValid` 兼容参数。真实数据超时阈值会根据手机上报的发送间隔自动放宽（默认 5 秒档约 12.5 秒），超时后有效状态自动变为 false。
 
-Python 电脑端 v1.1.0 还提供 Avatar 参数测试、启动时 GitHub 正式版检查、配对二维码和按需诊断模式。普通模式不保留历史心率，也不要求手表/手机附加扩展诊断字段；开启诊断模式后，曲线默认显示最近 1 分钟，可用滑轨选择 1–10 分钟，并计算所选范围的最低/最高/平均 BPM。诊断样本追加写入内部 CSV，曲线通过独立读句柄边写边读；只有手动点击“导出 CSV”才会生成用户选择的导出文件。
+Python 电脑端 v1.1.0 还提供 Avatar 参数测试、启动时 GitHub 正式版检查、配对二维码和按需诊断模式。普通模式不保留历史心率，也不要求手表/手机附加扩展诊断字段；开启诊断模式后，曲线默认显示最近 1 分钟，可用滑轨选择 1–10 分钟，并计算所选范围的最低/最高/平均 BPM。诊断样本追加写入内部 CSV，曲线通过独立读句柄从文件尾部读取所选时间窗，可边写边读且不会随整次会话长度全量扫描；只有手动点击“导出 CSV”才会生成用户选择的导出文件。
 
 运行 Python 电脑端测试并构建单文件 EXE：
 

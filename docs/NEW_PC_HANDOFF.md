@@ -1,6 +1,6 @@
 # 换机继续开发摘要
 
-更新时间：2026-07-21
+更新时间：2026-07-25
 
 ## 1. 项目目标与当前真实链路
 
@@ -24,15 +24,16 @@ Unity、Avatar 模型、Animator 和数字显示由用户自己维护；本仓�
 ## 2. GitHub 位置与继续开发分支
 
 - 仓库：<https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat>
-- 继续开发分支：`codex/low-power-wearos`
-- `main` 当前仍是较早的交接检查点。换机后不要直接从旧 `main` 重新做一遍。
+- 当前候选分支：`codex/v1.1.0-diagnostics-ready`
+- 正式 Release `v1.0.0` 仍是上一版；`v1.1.0` 当前只作为候选源码和构建产物，未创建正式 Release。
+- `main` 仍早于当前候选功能。换机后先取得上面的候选分支，不要从旧 `main` 重做。
 
 新电脑获取代码：
 
 ```powershell
 git clone https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat.git
 cd Vrc_realtimeheartbeat
-git switch codex/low-power-wearos
+git switch codex/v1.1.0-diagnostics-ready
 git pull --ff-only
 ```
 
@@ -73,7 +74,7 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 1. 电脑启动 `VrcRealtimeHeartbeat-Python.exe`，确认显示“监听 9123”。
 2. Windows 防火墙首次询问时允许专用网络访问。
 3. 手机打开“心率中转站”，填写电脑局域网 IPv4 和 UDP `9123`，发送间隔选择 `5 秒`。
-4. 手机点击“发送测试包”，确认电脑显示“链路测试通过”，手机收到电脑 ACK。
+4. 需要排查时先在电脑开启“诊断模式”，再由手机点击“手机 → 电脑一键诊断”，确认电脑收到 `phone_diagnostic` 且手机得到匹配 ACK。
 5. 手表打开“心率传输”，向下滑动并点击“开始传输”，首次运行授予心率和后台健康权限。
 6. 可以直接返回表盘并息屏；ForegroundService 和 Exercise 会话应继续运行。
 7. VRChat Action Menu 中开启 OSC。电脑默认向 `127.0.0.1:9000` 发送。
@@ -101,7 +102,48 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 - 为兼容早期版本，同时发送 `HeartRate`、`HeartRateNormalized`、`HeartRateValid`。
 - `phone_test` 和 `relay_test` 只用于 ACK/链路诊断，不会冒充真实心率写入 Avatar 参数。
 
-## 6. 新电脑需要的环境
+## 6. 跨端诊断模式原理
+
+电脑是诊断模式的主控制端，状态传播如下：
+
+```text
+PC 勾选诊断模式
+  → PC 在每个 pc_ack 中返回 diagnosticMode=true
+  → Phone 收到变化后更新诊断 UI
+  → Phone 只在状态变化时发送 /hr/control/v1
+  → Watch 开始附加扩展字段
+```
+
+关闭时走同一条反向流程。Watch 或 Phone 进程重启后默认回到普通模式；下一次有效 PC ACK 会重新同步。Phone UI 允许临时切换以便排查，但只要 PC 继续回 ACK，最终以 PC 开关为准。
+
+普通 `heart_rate` 包只保留转发和超时判断必需字段：
+
+| 字段 | 用途 |
+|---|---|
+| `version/type/sequence` | 协议版本、包类型、去重和 ACK 匹配 |
+| `sampleEpochMillis/bpm` | 真实采样时间与心率 |
+| `watchRelayIntervalSeconds` | 让手机与电脑采用不会误判超时的有效间隔 |
+| `watchAckRequested` | 正式版只按低频策略请求手表 ACK |
+| `phoneForwardIntervalSeconds` | 电脑计算动态超时 |
+
+诊断模式才增加 `sessionId`、原始 BPM、精度、手表电量/屏幕/发送模式、两端接收时间、手机局域网 IP、网络类型和 VPN 状态。手机在普通模式会再次主动删除这组字段，即使收到旧手表版本发来的扩展字段也不会继续传给电脑。
+
+手机到电脑使用单工作线程和两个有界待发槽：
+
+- 连续心率槽始终只保留最新样本，电脑离线时不会形成无界积压。
+- 手动诊断槽独立保留并优先发送，不会被下一份心率覆盖。
+- UDP socket 连接到配置的目标 IP/端口后才等待匹配序号 ACK，其他来源的数据报不能完成该请求。
+
+## 7. CSV、曲线和内存原理
+
+- 普通模式不创建历史队列、不写 CSV，曲线和统计面板不运行。
+- 第一次开启诊断模式时创建 `%LOCALAPPDATA%\VrcRealtimeHeartbeat\diagnostic-current.csv`；同一次程序运行内可暂停后继续追加。
+- 写句柄每行 `flush`，读取使用独立句柄，因此 Windows 上可以边写边读。
+- 曲线默认 1 分钟，滑轨限制为 1–10 分钟；每次刷新从文件尾部反向读取，读到窗口边界立即停止，不随整次诊断时长线性变慢。
+- “导出 CSV”只是把当前内部文件复制到用户选择的位置。程序不会自动导出；正常退出时若有未导出行会提示。
+- 下一次程序启动并首次开启诊断时会重建内部临时 CSV。需要保留的数据必须在退出前手动导出。
+
+## 8. 新电脑需要的环境
 
 必需：
 
@@ -127,7 +169,7 @@ PyInstaller >= 6, < 7
 - VRChat：做 OSC 实收测试时需要。
 - Unity 不属于本仓库工作范围。
 
-## 7. 首次环境配置
+## 9. 首次环境配置
 
 在 Android Studio SDK Manager 安装：
 
@@ -159,7 +201,7 @@ python -m venv .\pc-python\.venv
 
 电脑和手机应在可以互相访问的局域网中。VPN 可能改变路由或阻断手机到电脑 UDP；之前出现“息屏不发送”的一次现象实际是 VPN 导致，关闭 VPN 后恢复。电脑换网后必须在手机中更新电脑 IPv4。
 
-## 8. 本地测试与构建命令
+## 10. 本地测试与构建命令
 
 Android 全量回归：
 
@@ -194,9 +236,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-bridge\WatchTestRep
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-bridge\Build-Exe.ps1
 ```
 
-本轮已验证：Android 39 项单元测试 0 失败；Python 35 项 pytest 全部通过；三套 Android Lint 通过；两个 Watch APK、Phone APK、Python EXE 和旧 C# EXE 均构建成功。
+发布分支的最低门禁：
 
-## 9. 构建产物位置
+1. Python pytest、模块自检、打包 EXE 自检全部通过。
+2. 手表 diagnostic/production 与手机单元测试全部通过。
+3. 三个 Android 变体 Lint、assemble 全部通过。
+4. C# 回退桥和报告脚本自检通过。
+5. `git diff --check` 无空白错误，工作区只包含本次预期改动。
+
+2026-07-25 候选分支复核结果：
+
+- Python：52 项 pytest 全部通过；源码入口自检、Tk 诊断模式/滑轨冒烟、PyInstaller 单文件 EXE 构建与打包后 `--self-test` 通过。
+- Android：手表 diagnostic/production 与手机共执行 51 项单元测试，0 失败、0 error、0 skip。
+- Android Lint：三个变体均为 0 error；剩余 warning 只有“依赖存在更新版本”的提示，候选分支没有为了追新而变更运行时依赖。
+- 构建：两个 Watch APK、Phone APK、Python EXE、C# 回退 EXE 均成功；三套 APK 元数据均为 `versionName=1.1.0`、`versionCode=2`。
+- 回退工具：`HeartRateBridge.ps1 -SelfTest` 与 `WatchTestReport.ps1 -SelfTest` 通过。
+
+自动化通过不等于 Galaxy Watch、手机、VRChat 的真机实收已经完成。命令行出现的 SDK XML 3/4 版本提示来自本机 Android Studio 与 command-line tools 版本差异，本轮未影响测试、Lint 或构建；换机时应让两者保持同一 Android Studio 发布周期。
+
+## 11. 构建产物位置
 
 ```text
 app/build/outputs/apk/diagnostic/debug/app-diagnostic-debug.apk
@@ -208,7 +266,7 @@ dist/windows/VrcRealtimeHeartbeat.exe
 
 `dist/`、APK、测试原始输出和设备报告被 `.gitignore` 排除，不会随源码分支上传。换机时应从 GitHub Actions Artifacts 下载，或在新电脑重新构建。
 
-## 10. ADB 安装与测试注意事项
+## 12. ADB 安装与测试注意事项
 
 Wear OS 无线调试端口会变化，不能复用旧端口：
 
@@ -228,7 +286,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 
 正式息屏或续航测试期间不要持续运行 Logcat、轮询 dumpsys 或发送输入事件。测试结果应由手表本地持久化，测试结束后再用 ADB 导出。不要修改手表自动旋转；当前已恢复并验证 `accelerometer_rotation=0`、`user_rotation=0`。
 
-## 11. 当前验证状态与下一步
+## 13. 当前验证状态与下一步
 
 已经完成：
 
@@ -240,6 +298,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 - 旧正式版 Watch APK 已在 SM-R960 真机验证 5 秒省电链路；新增的 1 秒/5 秒选择尚未安装到设备验证。
 - Python Windows GUI、UDP ACK、OSC、超时、三位数拆分和 HRPulse。
 - v1.1.0 Python GUI 已加入默认关闭的按需诊断模式、1–10 分钟可调曲线（默认 1 分钟）、最低/最高/平均 BPM、Avatar 参数测试、边写边读的内部诊断 CSV、仅手动用户导出、GitHub 更新检查、配对二维码和电脑诊断；手机端已加入扫码配对和完整诊断模式。电脑通过 UDP ACK 控制手机，手机只在模式变化时通知手表，普通包不携带原始 BPM、精度、电量、屏幕状态等扩展字段。
+- 2026-07-25 代码复核修正了长时 CSV 全量扫描、诊断请求可能被心率覆盖、普通模式遗留 `sessionId`、UDP ACK 来源未绑定和正式版重复警告写日志的问题，并增加对应回归测试。
 
 换机后按顺序继续：
 
@@ -249,7 +308,16 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 4. 决定是否仍要继续最初的 Watch BLE GATT 直连电脑阶段；这部分尚未开始。
 5. 正式发布前配置稳定的 Android release signing；当前 APK 是 debug 签名。
 
-## 12. 不要重复或误改
+## 14. 功耗设计原则
+
+- 主要耗电来自连续 PPG/Exercise 会话，应用侧优化只能减少 CPU、闪存和无线通信，不能让持续心率达到系统低频全天监测的水平。
+- `1 秒实时`明确属于高功耗模式：直接心率传感器、零报告延迟和有界 WakeLock 只在用户选择该档时启用。
+- `5/10 秒`档必须保持 Health Services 批量交付、无直接传感器、无手动 WakeLock。
+- 正式版热路径不写逐样本日志；同一 warning 最多每分钟落一次。诊断版保留完整记录用于复现。
+- 不要为了 UI 数据重新引入普通模式历史缓存；历史、原始字段和 CSV 都必须继续受诊断开关控制。
+- 发送失败时保持“在途 + 最新心率 + 最新手动诊断”的有界结构，不能恢复无界重试队列。
+
+## 15. 不要重复或误改
 
 - 不要回到 MeasureClient 作为最终方案；它息屏后停止供数。
 - 不要重新证明 ExerciseClient 能否息屏采样；这已经真机验证。

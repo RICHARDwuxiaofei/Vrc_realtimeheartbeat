@@ -5,6 +5,7 @@
     <application>
         <activity
             android:name=".RelayTestActivity"
+            tools:ignore="WearRecents"
             tools:node="remove" />
     </application>
 

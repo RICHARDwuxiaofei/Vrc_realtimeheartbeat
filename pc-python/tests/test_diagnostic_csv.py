@@ -56,3 +56,32 @@ def test_diagnostic_mode_can_pause_and_resume_same_csv() -> None:
 
     assert [sample.bpm for sample in store.read_window(101_000, 1)] == [70, 71]
     store.stop()
+
+
+def test_read_window_stops_before_old_history(monkeypatch) -> None:
+    TEST_ROOT.mkdir(parents=True, exist_ok=True)
+    store = DiagnosticCsvStore(TEST_ROOT / "long-session.csv")
+    store.begin()
+    for index in range(2_000):
+        store.append(
+            HeartRateSample(index * 1_000, 60 + index % 40, "phone", 1),
+            {},
+            f"sample-{index}",
+        )
+
+    lines_read = 0
+    original = store._data_lines_from_newest
+
+    def counting_lines():
+        nonlocal lines_read
+        for line in original():
+            lines_read += 1
+            yield line
+
+    monkeypatch.setattr(store, "_data_lines_from_newest", counting_lines)
+    samples = store.read_window(now_ms=1_999_000, minutes=1)
+
+    assert len(samples) == 61
+    assert samples[0].epoch_ms == 1_939_000
+    assert lines_read == 62
+    store.stop()

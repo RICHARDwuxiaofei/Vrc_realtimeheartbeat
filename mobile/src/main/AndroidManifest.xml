@@ -11,6 +11,8 @@
     <application
         android:name=".mobile.PhoneRelayApplication"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@drawable/ic_launcher"
         android:label="心率中转站"
         android:roundIcon="@drawable/ic_launcher"

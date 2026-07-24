@@ -1,5 +1,7 @@
 # CODEX 交接文档
 
+> 历史归档提示（2026-07-25）：本文保留早期真机验证、问题演变和原始结论，开头的路径、分支、版本与“当前架构”描述已经过时。继续开发必须先读 [NEW_PC_HANDOFF.md](NEW_PC_HANDOFF.md)，当前候选分支为 `codex/v1.1.0-diagnostics-ready`，版本为 `1.1.0`。本轮变化见仓库根目录 [CHANGELOG.md](../CHANGELOG.md)。
+
 最后核对时间：2026-07-21（Asia/Hong_Kong）
 
 仓库：`D:\CODE\heartbeats`

@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.util.Log
+import androidx.core.content.edit
 import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,7 +54,7 @@ object PhoneRelayRepository {
     private const val PREFS = "phone_relay_settings"
     private val executor = Executors.newSingleThreadExecutor()
     private val pendingForwardLock = Any()
-    private var pendingForward: PendingForward? = null
+    private val pendingForwards = LatestForwardBuffer<PendingForward>()
     private var forwardWorkerRunning = false
     private var lastHeartRateForwardElapsed = 0L
     private var lastWatchDiagnosticNodeId: String? = null
@@ -80,10 +81,10 @@ object PhoneRelayRepository {
 
     fun saveTarget(ip: String, port: Int) {
         val context = appContext ?: return
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("targetIp", ip.trim())
-            .putInt("targetPort", port)
-            .apply()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putString("targetIp", ip.trim())
+            putInt("targetPort", port)
+        }
         update { it.copy(targetIp = ip.trim(), targetPort = port, lastError = "--") }
     }
 
@@ -101,20 +102,20 @@ object PhoneRelayRepository {
     fun setForwardIntervalSeconds(seconds: Int) {
         val context = appContext ?: return
         val value = seconds.coerceIn(1, 30)
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putInt("forwardIntervalSeconds", value)
-            .apply()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putInt("forwardIntervalSeconds", value)
+        }
         lastHeartRateForwardElapsed = 0L
         update { it.copy(forwardIntervalSeconds = value, lastError = "--") }
     }
 
     fun setForwardingEnabled(enabled: Boolean) {
         val context = appContext ?: return
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean("forwardingEnabled", enabled)
-            .apply()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putBoolean("forwardingEnabled", enabled)
+        }
         if (!enabled) {
-            synchronized(pendingForwardLock) { pendingForward = null }
+            synchronized(pendingForwardLock) { pendingForwards.clear() }
         } else {
             lastHeartRateForwardElapsed = 0L
         }
@@ -122,6 +123,12 @@ object PhoneRelayRepository {
             it.copy(
                 forwardingEnabled = enabled,
                 forwarding = if (enabled) it.forwarding else false,
+                diagnosticRunning = if (enabled) it.diagnosticRunning else false,
+                diagnosticStatus = if (!enabled && it.diagnosticRunning) {
+                    "诊断已取消：发送到电脑已暂停"
+                } else {
+                    it.diagnosticStatus
+                },
                 lastError = "--",
             )
         }
@@ -164,7 +171,7 @@ object PhoneRelayRepository {
             json.put("phoneNetworkType", networkType(context))
             json.put("phoneVpnActive", isVpnActive(context))
         } else {
-            DIAGNOSTIC_FIELDS.forEach(json::remove)
+            RelayDiagnosticFields.names.forEach(json::remove)
         }
         json.put("phoneForwardIntervalSeconds", effectiveForwardInterval)
         update {
@@ -321,7 +328,7 @@ object PhoneRelayRepository {
         synchronized(pendingForwardLock) {
             // Real-time heart rate must never build an unbounded retry queue while the PC is offline.
             // Keep the packet currently in flight and replace any waiting packet with the newest sample.
-            pendingForward = PendingForward(
+            val request = PendingForward(
                 watchNodeId,
                 JSONObject(json.toString()),
                 target.targetIp,
@@ -330,6 +337,9 @@ object PhoneRelayRepository {
                 watchAckRequested,
                 diagnostic,
             )
+            // A user-triggered diagnostic must not be overwritten by the next
+            // real-time heart-rate sample while the single worker is busy.
+            pendingForwards.offer(request, diagnostic)
             if (!forwardWorkerRunning) {
                 forwardWorkerRunning = true
                 shouldStartWorker = true
@@ -344,11 +354,11 @@ object PhoneRelayRepository {
     private fun drainLatestForwards() {
         while (true) {
             val request = synchronized(pendingForwardLock) {
-                pendingForward.also { pendingForward = null }
+                pendingForwards.poll()
             }
             if (request == null) {
                 val reallyFinished = synchronized(pendingForwardLock) {
-                    if (pendingForward == null) {
+                    if (pendingForwards.isEmpty()) {
                         forwardWorkerRunning = false
                         true
                     } else {
@@ -371,7 +381,7 @@ object PhoneRelayRepository {
         var pcAck = false
         var error = ""
         try {
-            if (request.isHeartRate && !mutableState.value.forwardingEnabled) {
+            if (!mutableState.value.forwardingEnabled) {
                 Log.i(TAG, "Forward skipped after pause sequence=$sequence")
                 return
             }
@@ -382,6 +392,9 @@ object PhoneRelayRepository {
                 socket.soTimeout = 1_000
                 val bytes = request.json.toString().toByteArray(Charsets.UTF_8)
                 val address = InetAddress.getByName(request.targetIp)
+                // Connect the UDP socket so an unrelated host cannot satisfy this
+                // request with a spoofed sequence-matching acknowledgement.
+                socket.connect(address, request.targetPort)
                 socket.send(DatagramPacket(bytes, bytes.size, address, request.targetPort))
                 update { it.copy(forwardedCount = it.forwardedCount + 1) }
                 val ackBuffer = ByteArray(1_024)
@@ -530,17 +543,4 @@ object PhoneRelayRepository {
     )
 
     private const val TAG = "HR_RELAY"
-    private val DIAGNOSTIC_FIELDS = listOf(
-        "diagnosticMode",
-        "watchReceivedEpochMillis",
-        "rawBpm",
-        "accuracy",
-        "watchBatteryPercent",
-        "watchScreenInteractive",
-        "watchRelayMode",
-        "phoneReceivedEpochMillis",
-        "phoneLocalIp",
-        "phoneNetworkType",
-        "phoneVpnActive",
-    )
 }
