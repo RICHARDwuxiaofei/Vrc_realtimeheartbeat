@@ -4,6 +4,7 @@ import sys
 
 from .app import main
 from .osc import encode_message
+from .pairing import build_pairing_uri
 from .protocol import build_ack, parse_packet
 
 
@@ -17,6 +18,11 @@ def self_test() -> None:
     assert encode_message("/avatar/parameters/HR_Hundreds", 0)
     assert encode_message("/avatar/parameters/HR_Tens", 7)
     assert encode_message("/avatar/parameters/HR_Ones", 2)
+    pairing_uri = build_pairing_uri("192.168.1.88", 9123)
+    assert pairing_uri == "vrc-heartbeat://pair?host=192.168.1.88&port=9123"
+    import qrcode
+
+    assert qrcode.make(pairing_uri).size[0] > 0
 
 
 if __name__ == "__main__":

@@ -40,6 +40,8 @@ data class PhoneRelayState(
     val forwardingEnabled: Boolean = true,
     val forwardIntervalSeconds: Int = 5,
     val throttledCount: Long = 0,
+    val diagnosticRunning: Boolean = false,
+    val diagnosticStatus: String = "尚未诊断",
 )
 
 object PhoneRelayRepository {
@@ -168,13 +170,36 @@ object PhoneRelayRepository {
         forward(context, sourceNodeId, json, isRealHeartRate, watchAckRequested)
     }
 
-    fun sendTestPacket() {
+    fun runDiagnostics() {
         val context = appContext ?: return
+        refreshNetwork()
+        val state = mutableState.value
+        when {
+            !state.forwardingEnabled -> {
+                update { it.copy(diagnosticRunning = false, diagnosticStatus = "失败：发送到电脑已暂停") }
+                return
+            }
+            state.targetIp.isBlank() -> {
+                update { it.copy(diagnosticRunning = false, diagnosticStatus = "失败：尚未设置电脑 IP") }
+                return
+            }
+            state.localIp == "--" -> {
+                update { it.copy(diagnosticRunning = false, diagnosticStatus = "失败：手机没有可用的局域网 IPv4") }
+                return
+            }
+        }
+        update {
+            it.copy(
+                diagnosticRunning = true,
+                diagnosticStatus = "正在测试 ${state.targetIp}:${state.targetPort}…",
+                lastError = "--",
+            )
+        }
         val now = System.currentTimeMillis()
         val json = JSONObject()
             .put("version", 1)
-            .put("type", "phone_test")
-            .put("sessionId", "phone-test")
+            .put("type", "phone_diagnostic")
+            .put("sessionId", "phone-diagnostic")
             .put("sequence", now)
             .put("sampleEpochMillis", now)
             .put("phoneReceivedEpochMillis", now)
@@ -184,8 +209,17 @@ object PhoneRelayRepository {
             .put("watchBatteryPercent", -1)
             .put("watchScreenInteractive", true)
             .put("phoneLocalIp", findLocalIpv4())
-        forward(context, null, json, isHeartRate = false, watchAckRequested = false)
+        forward(
+            context,
+            null,
+            json,
+            isHeartRate = false,
+            watchAckRequested = false,
+            diagnostic = true,
+        )
     }
+
+    fun sendTestPacket() = runDiagnostics()
 
     @Synchronized
     private fun shouldForwardHeartRate(): Boolean {
@@ -206,6 +240,7 @@ object PhoneRelayRepository {
         json: JSONObject,
         isHeartRate: Boolean,
         watchAckRequested: Boolean,
+        diagnostic: Boolean = false,
     ) {
         val target = mutableState.value
         if (!target.forwardingEnabled) {
@@ -224,13 +259,13 @@ object PhoneRelayRepository {
             // Real-time heart rate must never build an unbounded retry queue while the PC is offline.
             // Keep the packet currently in flight and replace any waiting packet with the newest sample.
             pendingForward = PendingForward(
-                context,
                 watchNodeId,
                 JSONObject(json.toString()),
                 target.targetIp,
                 target.targetPort,
                 isHeartRate,
                 watchAckRequested,
+                diagnostic,
             )
             if (!forwardWorkerRunning) {
                 forwardWorkerRunning = true
@@ -268,6 +303,7 @@ object PhoneRelayRepository {
     }
 
     private fun performForward(request: PendingForward) {
+        val context = appContext ?: return
         val sequence = request.json.optLong("sequence")
         var pcAck = false
         var error = ""
@@ -295,7 +331,7 @@ object PhoneRelayRepository {
         } catch (failure: Throwable) {
             val detail = failure.message ?: failure.javaClass.simpleName
             error = if (detail.contains("EPERM", ignoreCase = true) || detail.contains("Operation not permitted", ignoreCase = true)) {
-                if (isVpnActive(request.context)) {
+                if (isVpnActive(context)) {
                     "手机 VPN 阻止了局域网 UDP（EPERM）。请在 VPN 中开启“绕过局域网/允许局域网”，或测试时关闭 VPN"
                 } else {
                     "系统拒绝局域网 UDP（EPERM）。请检查“附近设备/局域网”权限和系统网络限制"
@@ -311,10 +347,18 @@ object PhoneRelayRepository {
                 pcAckCount = it.pcAckCount + if (pcAck) 1 else 0,
                 lastPcAckMillis = ackMillis ?: it.lastPcAckMillis,
                 lastError = error.ifBlank { "--" },
+                diagnosticRunning = if (request.diagnostic) false else it.diagnosticRunning,
+                diagnosticStatus = if (!request.diagnostic) {
+                    it.diagnosticStatus
+                } else if (pcAck) {
+                    "通过：电脑 ${request.targetIp}:${request.targetPort} 已回执"
+                } else {
+                    "失败：${error.ifBlank { "电脑没有返回有效回执" }}"
+                },
             )
         }
         if (request.watchNodeId != null && request.watchAckRequested) {
-            sendWatchAck(request.context, request.watchNodeId, sequence, pcAck, error)
+            sendWatchAck(context, request.watchNodeId, sequence, pcAck, error)
         }
     }
 
@@ -371,13 +415,13 @@ object PhoneRelayRepository {
     }
 
     private data class PendingForward(
-        val context: Context,
         val watchNodeId: String?,
         val json: JSONObject,
         val targetIp: String,
         val targetPort: Int,
         val isHeartRate: Boolean,
         val watchAckRequested: Boolean,
+        val diagnostic: Boolean,
     )
 
     private const val TAG = "HR_RELAY"

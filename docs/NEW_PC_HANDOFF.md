@@ -239,6 +239,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 - 移除 Watch/Phone 重复 Data Layer runtime listener。
 - 旧正式版 Watch APK 已在 SM-R960 真机验证 5 秒省电链路；新增的 1 秒/5 秒选择尚未安装到设备验证。
 - Python Windows GUI、UDP ACK、OSC、超时、三位数拆分和 HRPulse。
+- v1.1.0 Python GUI 已加入 10 分钟曲线、最低/最高/平均 BPM、Avatar 参数测试、默认关闭且仅手动落盘的 CSV、GitHub 更新检查、配对二维码和电脑诊断；手机端已加入扫码配对和带 UDP 回执结果的一键诊断。
 
 换机后按顺序继续：
 

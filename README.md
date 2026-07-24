@@ -74,14 +74,16 @@ $adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
 ## 三端联通测试
 
 1. 在电脑双击首选产物 `dist\windows-python\VrcRealtimeHeartbeat-Python.exe`，默认监听 UDP `9123`，OSC 目标为 `127.0.0.1:9000`。旧 C# 版仍位于 `dist\windows\VrcRealtimeHeartbeat.exe`。
-2. 在手机安装并打开 `mobile-debug.apk`，填写电脑界面显示的局域网 IPv4 和端口 `9123`。
-3. 手机点击“发送测试包”，确认手机和电脑的回执计数增加。
+2. 在电脑点击“显示配对二维码”，手机点击“扫码配对电脑”；也可以手动填写电脑局域网 IPv4 和端口 `9123`。
+3. 手机点击“一键诊断”，确认手机显示电脑已回执，电脑运行记录出现 `phone_diagnostic`。
 4. 手表点击 `Send phone / PC link test`。测试包必须经过三端并返回回执，但不会进入 VRChat。
 5. 真正测量前先在手表正式版选择发送频率，再启动“后台连续”：`5 秒省电`（默认）与 `10 秒超省电`都使用 Health Services 批量交付，不持有 WakeLock、不注册直接传感器；`1 秒实时`使用约 1 Hz 的直接心率传感器和有界滚动 WakeLock，息屏延迟更低但明显更耗电。省电档在 BPM 不变时自动把重复保活放宽到双倍间隔。手机到电脑可独立选择 `1/2/5/10/30 秒`并暂停/恢复。要得到真正约 1 秒一份的新 BPM，手表和手机两端都要选择 1 秒；手机档位快于手表档位时只能等待下一份手表数据。
 
 功耗根因、官方依据和下一轮 A/B 测试指标见 [docs/POWER_OPTIMIZATION.md](docs/POWER_OPTIMIZATION.md)。2026-07-21 的 5 秒省电档 20 分钟正常佩戴测试取得 1194 个真实样本，最大采样间隔 2005 ms、息屏交付 P95 4056 ms、最长无 callback 6016 ms，且无 WakeLock、服务重启、错误或崩溃。2026-07-23 的第二轮代码优化又移除了正式版逐批日志 flush、逐批 SharedPreferences 写入、每 30 秒节点重查和逐包 ACK，并为手机离线发现增加退避；这些改动仍需 60 分钟真机 A/B 验证。
 
 电脑程序会把 BPM 钳制到 `0..999`，并按顺序输出 `/avatar/parameters/HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`（全部为 OSC Int32），用于三位数 Avatar 显示；同时保留 `HRValid`、由 BPM 本地生成的 `HRPulse`，以及旧版 `HeartRate`、`HeartRateNormalized`、`HeartRateValid` 兼容参数。真实数据超时阈值会根据手机上报的发送间隔自动放宽（默认 5 秒档约 12.5 秒），超时后有效状态自动变为 false。
+
+Python 电脑端 v1.1.0 还提供 Avatar 参数一键测试、最近 10 分钟心率曲线、最低/最高/平均 BPM、启动时 GitHub 正式版检查和电脑端一键诊断。CSV 记录默认关闭；开启时只把新样本缓存到内存，只有手动点击“导出 CSV”才会创建文件，关闭程序不会自动导出。
 
 运行 Python 电脑端测试并构建单文件 EXE：
 

@@ -2,6 +2,7 @@ package best.nagikokoro.watch6heartrateprobe.mobile
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -52,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import best.nagikokoro.watch6heartrateprobe.R
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -104,6 +107,20 @@ private fun RelayScreen() {
     val state by PhoneRelayRepository.state.collectAsStateWithLifecycle()
     var ip by remember(state.targetIp) { mutableStateOf(state.targetIp) }
     var port by remember(state.targetPort) { mutableStateOf(state.targetPort.toString()) }
+    var pairingMessage by remember { mutableStateOf<String?>(null) }
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (contents != null) {
+            runCatching { PairingUri.parse(contents) }
+                .onSuccess { target ->
+                    ip = target.host
+                    port = target.port.toString()
+                    PhoneRelayRepository.saveTarget(target.host, target.port)
+                    pairingMessage = "配对成功：${target.host}:${target.port}"
+                }
+                .onFailure { pairingMessage = it.message ?: "配对码无法识别" }
+        }
+    }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -178,6 +195,18 @@ private fun RelayScreen() {
             SectionTitle("电脑地址")
             Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            scanLauncher.launch(
+                                ScanOptions()
+                                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    .setPrompt("扫描电脑端显示的配对二维码")
+                                    .setBeepEnabled(false)
+                                    .setOrientationLocked(false),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("扫码配对电脑") }
                     OutlinedTextField(
                         value = ip,
                         onValueChange = { ip = it.trim() },
@@ -204,12 +233,25 @@ private fun RelayScreen() {
                         OutlinedButton(
                             onClick = {
                                 saveTarget(ip, port)
-                                PhoneRelayRepository.sendTestPacket()
+                                PhoneRelayRepository.runDiagnostics()
                             },
-                            enabled = state.forwardingEnabled,
+                            enabled = state.forwardingEnabled && !state.diagnosticRunning,
                             modifier = Modifier.weight(1f),
-                        ) { Text("测试电脑") }
+                        ) { Text(if (state.diagnosticRunning) "诊断中…" else "一键诊断") }
                     }
+                    pairingMessage?.let { message ->
+                        Text(message, color = if (message.startsWith("配对成功")) Success else AccentCoral, fontSize = 12.sp)
+                    }
+                    Text(
+                        state.diagnosticStatus,
+                        color = when {
+                            state.diagnosticRunning -> AccentBlue
+                            state.diagnosticStatus.startsWith("通过") -> Success
+                            state.diagnosticStatus.startsWith("失败") -> AccentCoral
+                            else -> Muted
+                        },
+                        fontSize = 12.sp,
+                    )
                 }
             }
 

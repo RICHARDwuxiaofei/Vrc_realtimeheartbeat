@@ -53,6 +53,15 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCOD
 $exe = Join-Path $OutputDirectory 'VrcRealtimeHeartbeat-Python.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw "Python EXE was not created: $exe" }
 
+$selfTest = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -WindowStyle Hidden
+if (-not $selfTest.WaitForExit(15000)) {
+    Stop-Process -Id $selfTest.Id -Force
+    throw "Packaged EXE self-test timed out"
+}
+if ($selfTest.ExitCode -ne 0) {
+    throw "Packaged EXE self-test failed with exit code $($selfTest.ExitCode)"
+}
+
 Copy-Item (Join-Path $bridgeRoot 'README.md') (Join-Path $OutputDirectory 'README-Python.md') -Force
 $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  VrcRealtimeHeartbeat-Python.exe" | Set-Content (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding ASCII

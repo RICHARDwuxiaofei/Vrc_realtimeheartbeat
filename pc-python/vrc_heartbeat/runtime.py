@@ -33,6 +33,7 @@ class BridgeRuntime:
         self._thread: threading.Thread | None = None
         self._forward_osc = config.forward_osc
         self._engine = BridgeEngine(self._send_osc)
+        self._engine_lock = threading.RLock()
         self.bound_port = 0
 
     @property
@@ -56,7 +57,8 @@ class BridgeRuntime:
         self._receiver = receiver
         self.bound_port = int(receiver.getsockname()[1])
         self._stop.clear()
-        self._engine.start()
+        with self._engine_lock:
+            self._engine.start()
         self._thread = threading.Thread(target=self._run, name="heart-rate-udp", daemon=True)
         self._thread.start()
         self._emit("listening", port=self.bound_port)
@@ -74,9 +76,25 @@ class BridgeRuntime:
             thread.join(timeout=2.0)
         self._thread = None
         self._receiver = None
-        self._engine.stop()
+        with self._engine_lock:
+            self._engine.stop()
         self._osc_socket.close()
         self._emit("stopped")
+
+    def send_avatar_test(self, bpm: int = 123) -> bool:
+        if not self._forward_osc or not self.running:
+            return False
+        with self._engine_lock:
+            self._engine.start_avatar_test(bpm)
+
+        def finish() -> None:
+            if self._stop.wait(0.18):
+                return
+            with self._engine_lock:
+                self._engine.finish_avatar_test()
+
+        threading.Thread(target=finish, name="avatar-test-pulse", daemon=True).start()
+        return True
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -97,7 +115,8 @@ class BridgeRuntime:
             try:
                 packet = parse_packet(data)
                 receiver.sendto(build_ack(packet.sequence, now_ms), sender)
-                result = self._engine.accept(packet, now_ms)
+                with self._engine_lock:
+                    result = self._engine.accept(packet, now_ms)
                 self._emit(
                     "packet",
                     packet=packet,
@@ -114,7 +133,8 @@ class BridgeRuntime:
             self._tick()
 
     def _tick(self) -> None:
-        result = self._engine.tick(_now_ms())
+        with self._engine_lock:
+            result = self._engine.tick(_now_ms())
         if result is not None and result.kind == "stale":
             self._emit("stale", timeout_ms=self._engine.timeout_ms)
 
