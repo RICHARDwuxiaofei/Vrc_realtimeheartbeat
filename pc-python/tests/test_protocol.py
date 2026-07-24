@@ -53,7 +53,12 @@ def test_ack_matches_existing_phone_contract():
         "type": "pc_ack",
         "sequence": 42,
         "pcEpochMillis": 9_000,
+        "diagnosticMode": False,
     }
+
+
+def test_ack_can_request_diagnostic_mode():
+    assert json.loads(build_ack(42, 9_000, diagnostic_mode=True))["diagnosticMode"] is True
 
 
 def test_latency_never_goes_negative():

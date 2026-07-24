@@ -4,7 +4,6 @@ import android.content.Context
 import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.Node
 import com.google.android.gms.wearable.Wearable
-import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 
 class WearHeartRateRelay(
@@ -169,23 +168,21 @@ class WearHeartRateRelay(
         relayMode: WatchRelayMode,
         watchAckRequested: Boolean,
         messageType: String,
-    ): ByteArray = JSONObject()
-        .put("version", RelayProtocol.PROTOCOL_VERSION)
-        .put("type", messageType)
-        .put("sessionId", sessionId)
-        .put("sequence", sequence)
-        .put("sampleEpochMillis", sampleEpochMillis)
-        .put("watchReceivedEpochMillis", receivedEpochMillis)
-        .put("bpm", bpm)
-        .put("rawBpm", rawBpm)
-        .put("accuracy", accuracy)
-        .put("watchBatteryPercent", batteryPercent)
-        .put("watchScreenInteractive", screenInteractive)
-        .put("watchRelayMode", relayMode.name)
-        .put("watchRelayIntervalSeconds", relayMode.intervalSeconds)
-        .put("watchAckRequested", watchAckRequested)
-        .toString()
-        .toByteArray(Charsets.UTF_8)
+    ): ByteArray = RelaySamplePayload.build(
+        sequence = sequence,
+        sessionId = sessionId,
+        sampleEpochMillis = sampleEpochMillis,
+        receivedEpochMillis = receivedEpochMillis,
+        bpm = bpm,
+        rawBpm = rawBpm,
+        accuracy = accuracy,
+        batteryPercent = batteryPercent,
+        screenInteractive = screenInteractive,
+        relayMode = relayMode,
+        watchAckRequested = watchAckRequested,
+        messageType = messageType,
+        diagnosticMode = RelayDiagnosticModeStore.enabled,
+    )
 
     fun sendDiagnosticTest() {
         nextResolveAllowedMillis = 0L

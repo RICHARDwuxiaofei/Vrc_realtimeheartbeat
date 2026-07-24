@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -162,10 +163,26 @@ private fun RelayScreen() {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             HeartRateHero(state, now, watchAlive)
+            DiagnosticModeCard(state.diagnosticMode)
 
             SectionTitle("链路状态")
-            StatusCard("01", "Galaxy Watch6", if (watchAlive) "蓝牙中转正常 · 序号 ${state.lastSequence ?: "--"}" else "等待手表心率", watchAlive)
-            StatusCard("02", "这台手机", "${state.networkType} · ${state.localIp}" + if (state.vpnActive) " · VPN 已开启" else "", state.localIp != "--")
+            StatusCard(
+                "01",
+                "Galaxy Watch6",
+                if (watchAlive) {
+                    if (state.diagnosticMode) "蓝牙中转正常 · 序号 ${state.lastSequence ?: "--"}" else "蓝牙中转正常"
+                } else {
+                    "等待手表心率"
+                },
+                watchAlive,
+            )
+            StatusCard(
+                "02",
+                "这台手机",
+                "${state.networkType} · ${state.localIp}" +
+                    if (state.diagnosticMode && state.vpnActive) " · VPN 已开启" else "",
+                state.localIp != "--",
+            )
             StatusCard(
                 "03",
                 "Windows 接收器",
@@ -225,51 +242,66 @@ private fun RelayScreen() {
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(
-                            onClick = { saveTarget(ip, port) },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("保存设置") }
+                    Button(
+                        onClick = { saveTarget(ip, port) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("保存设置") }
+                    if (state.diagnosticMode) {
                         OutlinedButton(
                             onClick = {
                                 saveTarget(ip, port)
                                 PhoneRelayRepository.runDiagnostics()
                             },
                             enabled = state.forwardingEnabled && !state.diagnosticRunning,
-                            modifier = Modifier.weight(1f),
-                        ) { Text(if (state.diagnosticRunning) "诊断中…" else "一键诊断") }
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(if (state.diagnosticRunning) "诊断中…" else "手机 → 电脑一键诊断") }
                     }
                     pairingMessage?.let { message ->
                         Text(message, color = if (message.startsWith("配对成功")) Success else AccentCoral, fontSize = 12.sp)
                     }
-                    Text(
-                        state.diagnosticStatus,
-                        color = when {
-                            state.diagnosticRunning -> AccentBlue
-                            state.diagnosticStatus.startsWith("通过") -> Success
-                            state.diagnosticStatus.startsWith("失败") -> AccentCoral
-                            else -> Muted
-                        },
-                        fontSize = 12.sp,
-                    )
+                    if (state.diagnosticMode) {
+                        Text(
+                            state.diagnosticStatus,
+                            color = when {
+                                state.diagnosticRunning -> AccentBlue
+                                state.diagnosticStatus.startsWith("通过") -> Success
+                                state.diagnosticStatus.startsWith("失败") -> AccentCoral
+                                else -> Muted
+                            },
+                            fontSize = 12.sp,
+                        )
+                    }
                 }
             }
 
-            Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("运行统计", fontWeight = FontWeight.Bold)
-                    Metric("手表样本", state.receivedCount.toString())
-                    Metric("未转发样本", state.throttledCount.toString())
-                    Metric("已发往电脑", state.forwardedCount.toString())
-                    Metric("电脑确认", state.pcAckCount.toString())
-                    Metric("最近手表数据", state.lastPhoneReceiveMillis?.let(::formatTime) ?: "--")
-                    Metric("最近电脑确认", state.lastPcAckMillis?.let(::formatTime) ?: "--")
-                    Metric("当前目标", state.targetIp.ifBlank { "未设置" } + ":${state.targetPort}")
+            if (state.diagnosticMode) {
+                Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("完整诊断数据", fontWeight = FontWeight.Bold)
+                        Metric("手表样本", state.receivedCount.toString())
+                        Metric("未转发样本", state.throttledCount.toString())
+                        Metric("已发往电脑", state.forwardedCount.toString())
+                        Metric("电脑确认", state.pcAckCount.toString())
+                        Metric("原始 BPM", state.watchRawBpm?.toString() ?: "--")
+                        Metric("传感器精度", state.watchAccuracy ?: "--")
+                        Metric("手表电量", state.watchBatteryPercent?.let { "$it%" } ?: "--")
+                        Metric(
+                            "手表屏幕",
+                            state.watchScreenInteractive?.let { if (it) "亮屏" else "息屏" } ?: "--",
+                        )
+                        Metric("手表发送模式", state.watchRelayMode ?: "--")
+                        Metric("手表发送间隔", state.watchRelayIntervalSeconds?.let { "${it}s" } ?: "--")
+                        Metric("手机网络", state.networkType + if (state.vpnActive) " · VPN" else "")
+                        Metric("手机局域网 IP", state.localIp)
+                        Metric("最近手表数据", state.lastPhoneReceiveMillis?.let(::formatTime) ?: "--")
+                        Metric("最近电脑确认", state.lastPcAckMillis?.let(::formatTime) ?: "--")
+                        Metric("当前目标", state.targetIp.ifBlank { "未设置" } + ":${state.targetPort}")
+                    }
                 }
             }
 
             if (state.lastError != "--") AlertCard(state.lastError, AccentCoral.copy(alpha = 0.16f), AccentCoral)
-            if (state.vpnActive) {
+            if (state.diagnosticMode && state.vpnActive) {
                 AlertCard("检测到 VPN。电脑回执失败时，请允许局域网访问或暂时关闭 VPN。", Color(0x33FFB74D), Color(0xFFFFC56D))
             }
             Text(
@@ -279,6 +311,34 @@ private fun RelayScreen() {
                 lineHeight = 18.sp,
             )
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticModeCard(enabled: Boolean) {
+    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardElevated)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("诊断模式", fontWeight = FontWeight.Bold)
+                Text(
+                    if (enabled) {
+                        "采集手表扩展字段并显示完整链路数据；电脑开关会同步"
+                    } else {
+                        "普通模式：只保留心率中转所需数据；电脑端为主开关"
+                    },
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = PhoneRelayRepository::setDiagnosticMode,
+            )
         }
     }
 }

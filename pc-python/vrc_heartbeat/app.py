@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import ctypes
 from datetime import datetime
 import queue
@@ -14,7 +13,8 @@ from typing import Any
 import webbrowser
 
 from . import __version__
-from .analytics import HeartRateHistory, HeartRateSample
+from .analytics import HeartRateSample
+from .diagnostic_csv import DiagnosticCsvStore
 from .pairing import build_pairing_uri
 from .runtime import BridgeRuntime, RuntimeConfig
 from .settings import AppSettings, load_settings, save_settings
@@ -55,16 +55,16 @@ class HeartRateBridgeApp:
         self.runtime: BridgeRuntime | None = None
         self.events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
         self.packet_count = 0
-        self.history = HeartRateHistory()
-        self.csv_samples: list[HeartRateSample] = []
-        self.csv_exported_count = 0
+        self.diagnostic_csv = DiagnosticCsvStore()
+        self.diagnostic_session_started = False
         self.latest_release_url = ""
         self._qr_photo: Any = None
 
         self.listen_port = tk.StringVar(value=str(self.settings.listen_port))
         self.osc_port = tk.StringVar(value=str(self.settings.osc_port))
         self.forward_osc = tk.BooleanVar(value=self.settings.forward_osc)
-        self.csv_recording = tk.BooleanVar(value=False)
+        self.diagnostic_mode = tk.BooleanVar(value=False)
+        self.chart_minutes = tk.IntVar(value=1)
         self.bpm_text = tk.StringVar(value="--")
         self.signal_text = tk.StringVar(value="等待手机数据")
         self.detail_text = tk.StringVar(value="尚未收到数据包")
@@ -74,7 +74,8 @@ class HeartRateBridgeApp:
         self.minimum_text = tk.StringVar(value="--")
         self.maximum_text = tk.StringVar(value="--")
         self.average_text = tk.StringVar(value="--")
-        self.csv_text = tk.StringVar(value="CSV 未记录")
+        self.csv_text = tk.StringVar(value="诊断模式未开启")
+        self.chart_title = tk.StringVar(value="最近 1 分钟心率曲线")
         self.update_text = tk.StringVar(value="正在检查 GitHub…")
 
         self._configure_window()
@@ -173,39 +174,59 @@ class HeartRateBridgeApp:
             font=("Microsoft YaHei UI", 8),
         ).pack(anchor="w", pady=(3, 0))
 
-        stats = tk.Frame(summary, bg="#fafaf8")
-        stats.pack(side="left", fill="y", padx=1, pady=1)
-        tk.Label(stats, text="最近 10 分钟", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
+        self.stats_panel = tk.Frame(summary, bg="#fafaf8")
+        tk.Label(self.stats_panel, text="所选时间范围", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
             anchor="w", padx=18, pady=(15, 8)
         )
-        stats_row = tk.Frame(stats, bg="#fafaf8")
+        stats_row = tk.Frame(self.stats_panel, bg="#fafaf8")
         stats_row.pack(padx=18, pady=(0, 14))
         self._stat_value(stats_row, "最低", self.minimum_text, 0)
         self._stat_value(stats_row, "最高", self.maximum_text, 1)
         self._stat_value(stats_row, "平均", self.average_text, 2)
 
-        status_column = tk.Frame(summary, bg="#fafaf8", width=240)
-        status_column.pack(side="right", fill="y", padx=(0, 1), pady=1)
-        status_column.pack_propagate(False)
-        tk.Label(status_column, text="连接状态", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
+        self.status_column = tk.Frame(summary, bg="#fafaf8", width=240)
+        self.status_column.pack(side="right", fill="y", padx=(0, 1), pady=1)
+        self.status_column.pack_propagate(False)
+        tk.Label(self.status_column, text="连接状态", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
             anchor="w", padx=18, pady=(15, 7)
         )
-        self._status_row(status_column, "UDP 接收器", self.receiver_text)
-        self._status_row(status_column, "手机", self.phone_text)
-        self._status_row(status_column, "VRChat OSC", self.osc_text)
+        self._status_row(self.status_column, "UDP 接收器", self.receiver_text)
+        self._status_row(self.status_column, "手机", self.phone_text)
+        self._status_row(self.status_column, "VRChat OSC", self.osc_text)
 
-        chart_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        chart_panel.pack(fill="x", pady=(11, 0))
-        chart_header = tk.Frame(chart_panel, bg=PANEL)
+        self.chart_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        chart_header = tk.Frame(self.chart_panel, bg=PANEL)
         chart_header.pack(fill="x", padx=16, pady=(10, 2))
-        tk.Label(chart_header, text="最近 10 分钟心率曲线", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+        tk.Label(
+            chart_header, textvariable=self.chart_title, bg=PANEL, fg=TEXT,
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(side="left")
         tk.Label(chart_header, textvariable=self.csv_text, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="right")
-        self.chart = tk.Canvas(chart_panel, height=170, bg="#fafaf8", highlightthickness=0)
+        slider_row = tk.Frame(self.chart_panel, bg=PANEL)
+        slider_row.pack(fill="x", padx=16)
+        tk.Label(slider_row, text="显示范围", bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
+        tk.Scale(
+            slider_row,
+            from_=1,
+            to=10,
+            orient="horizontal",
+            variable=self.chart_minutes,
+            command=self._change_chart_minutes,
+            showvalue=True,
+            resolution=1,
+            bg=PANEL,
+            fg=TEXT,
+            highlightthickness=0,
+            troughcolor=CHART_GRID,
+            activebackground=ACCENT,
+        ).pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.chart = tk.Canvas(self.chart_panel, height=160, bg="#fafaf8", highlightthickness=0)
         self.chart.pack(fill="x", padx=16, pady=(3, 13))
         self.chart.bind("<Configure>", lambda _event: self._draw_chart())
 
-        settings_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        settings_panel.pack(fill="x", pady=(11, 0))
+        self.settings_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        self.settings_panel.pack(fill="x", pady=(11, 0))
+        settings_panel = self.settings_panel
         tk.Label(settings_panel, text="连接与工具", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).grid(
             row=0, column=0, columnspan=8, sticky="w", padx=16, pady=(12, 8)
         )
@@ -215,7 +236,8 @@ class HeartRateBridgeApp:
             settings_panel, text="发送到 VRChat OSC", variable=self.forward_osc, command=self._update_osc_label,
         ).grid(row=1, column=4, columnspan=2, sticky="w", padx=12, pady=(0, 12))
         ttk.Checkbutton(
-            settings_panel, text="记录 CSV 数据", variable=self.csv_recording, command=self._toggle_csv_recording,
+            settings_panel, text="诊断模式（按需采集扩展数据）",
+            variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode,
         ).grid(row=1, column=6, columnspan=2, sticky="w", padx=(8, 16), pady=(0, 12))
 
         self.start_button = ttk.Button(settings_panel, text="启动接收", style="Primary.TButton", command=self.start_receiver)
@@ -224,18 +246,24 @@ class HeartRateBridgeApp:
             settings_panel, text="停止", style="Secondary.TButton", command=self.stop_receiver, state="disabled",
         )
         self.stop_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(0, 13))
-        ttk.Button(
+        self.avatar_test_button = ttk.Button(
             settings_panel, text="Avatar 参数测试", style="Secondary.TButton", command=self.send_avatar_test,
-        ).grid(row=2, column=2, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
+            state="disabled",
+        )
+        self.avatar_test_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
         ttk.Button(
             settings_panel, text="显示配对二维码", style="Secondary.TButton", command=self.show_pairing_qr,
         ).grid(row=2, column=4, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
-        ttk.Button(
+        self.diagnostic_button = ttk.Button(
             settings_panel, text="一键诊断", style="Secondary.TButton", command=self.run_diagnostics,
-        ).grid(row=2, column=6, sticky="ew", padx=4, pady=(0, 13))
-        ttk.Button(
+            state="disabled",
+        )
+        self.diagnostic_button.grid(row=2, column=6, sticky="ew", padx=4, pady=(0, 13))
+        self.export_button = ttk.Button(
             settings_panel, text="导出 CSV…", style="Secondary.TButton", command=self.export_csv,
-        ).grid(row=2, column=7, sticky="ew", padx=(4, 16), pady=(0, 13))
+            state="disabled",
+        )
+        self.export_button.grid(row=2, column=7, sticky="ew", padx=(4, 16), pady=(0, 13))
         for column in range(8):
             settings_panel.grid_columnconfigure(column, weight=1)
 
@@ -288,6 +316,7 @@ class HeartRateBridgeApp:
                 self._enqueue_event,
             )
             self.runtime.start()
+            self.runtime.set_diagnostic_mode(self.diagnostic_mode.get())
             self.start_button.configure(state="disabled")
             self.stop_button.configure(state="normal")
             self.listen_port_entry.configure(state="disabled")
@@ -359,6 +388,9 @@ class HeartRateBridgeApp:
         ).pack(padx=24, pady=(7, 20))
 
     def run_diagnostics(self) -> None:
+        if not self.diagnostic_mode.get():
+            messagebox.showinfo("一键诊断", "请先开启诊断模式。")
+            return
         runtime = self.runtime
         addresses = local_ipv4_addresses()
         checks = [
@@ -377,17 +409,41 @@ class HeartRateBridgeApp:
         self._append_log("电脑诊断：" + "；".join(lines))
         messagebox.showinfo("一键诊断", result + "\n\n" + "\n".join(lines))
 
-    def _toggle_csv_recording(self) -> None:
-        if self.csv_recording.get():
-            self.csv_text.set(f"CSV 记录中 · 已缓存 {len(self.csv_samples)} 条")
-            self._append_log("CSV 记录已开启；仅缓存到内存，不会自动创建文件")
+    def _toggle_diagnostic_mode(self) -> None:
+        enabled = self.diagnostic_mode.get()
+        if enabled:
+            try:
+                if self.diagnostic_session_started:
+                    self.diagnostic_csv.resume()
+                else:
+                    self.diagnostic_csv.begin()
+                    self.diagnostic_session_started = True
+            except OSError as exc:
+                self.diagnostic_mode.set(False)
+                messagebox.showerror("诊断模式", f"无法创建诊断 CSV：{exc}")
+                return
+            self.stats_panel.pack(side="left", fill="y", padx=1, pady=1, before=self.status_column)
+            self.chart_panel.pack(fill="x", pady=(11, 0), before=self.settings_panel)
+            self.avatar_test_button.configure(state="normal")
+            self.diagnostic_button.configure(state="normal")
+            self.export_button.configure(state="normal")
+            self.csv_text.set(f"CSV 追加写入 · {self.diagnostic_csv.row_count} 条")
+            self._append_log("诊断模式已开启：扩展字段、CSV、曲线和统计开始工作")
         else:
-            self.csv_text.set(f"CSV 已暂停 · 已缓存 {len(self.csv_samples)} 条")
-            self._append_log("CSV 记录已暂停；需要时请手动点击“导出 CSV”")
+            self.diagnostic_csv.stop()
+            self.stats_panel.pack_forget()
+            self.chart_panel.pack_forget()
+            self.avatar_test_button.configure(state="disabled")
+            self.diagnostic_button.configure(state="disabled")
+            self.export_button.configure(state="disabled")
+            self.csv_text.set("诊断模式未开启")
+            self._append_log("诊断模式已关闭：停止扩展字段和 CSV 写入")
+        if self.runtime is not None:
+            self.runtime.set_diagnostic_mode(enabled)
 
     def export_csv(self) -> None:
-        if not self.csv_samples:
-            messagebox.showinfo("导出 CSV", "还没有记录的数据。请先开启“记录 CSV 数据”。")
+        if self.diagnostic_csv.row_count == 0:
+            messagebox.showinfo("导出 CSV", "还没有诊断数据。请先开启诊断模式。")
             return
         filename = filedialog.asksaveasfilename(
             title="导出心率 CSV",
@@ -398,22 +454,20 @@ class HeartRateBridgeApp:
         if not filename:
             return
         try:
-            with open(filename, "w", newline="", encoding="utf-8-sig") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["timestamp", "epoch_ms", "bpm", "phone_ip", "latency_ms"])
-                for sample in self.csv_samples:
-                    writer.writerow([
-                        datetime.fromtimestamp(sample.epoch_ms / 1_000).isoformat(timespec="milliseconds"),
-                        sample.epoch_ms,
-                        sample.bpm,
-                        sample.sender,
-                        sample.latency_ms,
-                    ])
-            self.csv_exported_count = len(self.csv_samples)
+            from pathlib import Path
+
+            self.diagnostic_csv.export(Path(filename))
             self._append_log(f"CSV 已手动导出：{filename}")
-            messagebox.showinfo("导出 CSV", f"已导出 {len(self.csv_samples)} 条数据。")
+            messagebox.showinfo("导出 CSV", f"已导出 {self.diagnostic_csv.row_count} 条数据。")
         except OSError as exc:
             messagebox.showerror("导出 CSV", f"写入失败：{exc}")
+
+    def _change_chart_minutes(self, value: str) -> None:
+        minutes = max(1, min(10, int(float(value))))
+        self.chart_minutes.set(minutes)
+        self.chart_title.set(f"最近 {minutes} 分钟心率曲线")
+        if self.diagnostic_mode.get():
+            self._refresh_chart_once()
 
     def check_for_updates(self) -> None:
         self.update_text.set("正在检查 GitHub…")
@@ -455,25 +509,31 @@ class HeartRateBridgeApp:
             self.phone_text.set(data["sender"])
             latency = int(data["latency_ms"])
             if packet.is_real_heart_rate:
-                now_ms = int(time.time() * 1_000)
-                sample = HeartRateSample(now_ms, packet.bpm, data["sender"], latency)
-                self.history.add(sample)
-                if self.csv_recording.get():
-                    self.csv_samples.append(sample)
-                    self.csv_text.set(f"CSV 记录中 · 已缓存 {len(self.csv_samples)} 条")
                 self.bpm_text.set(str(packet.bpm))
                 self.signal_text.set("数据正常")
                 self.signal_label.configure(fg=GOOD)
-                self._update_stats()
-                self._draw_chart()
+                if self.diagnostic_mode.get():
+                    now_ms = int(time.time() * 1_000)
+                    sample = HeartRateSample(now_ms, packet.bpm, data["sender"], latency)
+                    try:
+                        self.diagnostic_csv.append(
+                            sample,
+                            packet.payload,
+                            datetime.fromtimestamp(now_ms / 1_000).isoformat(timespec="milliseconds"),
+                        )
+                        self.csv_text.set(f"CSV 追加写入 · {self.diagnostic_csv.row_count} 条")
+                    except OSError as exc:
+                        self._append_log(f"诊断 CSV 写入失败：{exc}")
+                    self._refresh_chart_once()
             else:
                 self.signal_text.set("手机 → 电脑诊断通过")
                 self.signal_label.configure(fg=GOOD)
             self.detail_text.set(f"数据包 {self.packet_count}   ·   端到端 {latency} ms")
-            self._append_log(
-                f"{packet.packet_type}  seq={packet.sequence}  bpm={packet.bpm}  "
-                f"phone={data['sender']}  latency={latency}ms  ack=ok"
-            )
+            if self.diagnostic_mode.get() or not packet.is_real_heart_rate:
+                self._append_log(
+                    f"{packet.packet_type}  seq={packet.sequence}  bpm={packet.bpm}  "
+                    f"phone={data['sender']}  latency={latency}ms  ack=ok"
+                )
             return
         if kind == "stale":
             self.bpm_text.set("--")
@@ -502,23 +562,30 @@ class HeartRateBridgeApp:
             self.receiver_text.set("已停止")
 
     def _refresh_chart(self) -> None:
-        self.history.prune()
-        self._update_stats()
-        self._draw_chart()
+        if self.diagnostic_mode.get():
+            self._refresh_chart_once()
         self.root.after(1_000, self._refresh_chart)
 
-    def _update_stats(self) -> None:
-        stats = self.history.stats()
-        if stats is None:
+    def _refresh_chart_once(self) -> None:
+        samples = self.diagnostic_csv.read_window(
+            int(time.time() * 1_000),
+            self.chart_minutes.get(),
+        )
+        self._update_stats(samples)
+        self._draw_chart(samples)
+
+    def _update_stats(self, samples: tuple[HeartRateSample, ...]) -> None:
+        if not samples:
             self.minimum_text.set("--")
             self.maximum_text.set("--")
             self.average_text.set("--")
             return
-        self.minimum_text.set(str(stats.minimum))
-        self.maximum_text.set(str(stats.maximum))
-        self.average_text.set(f"{stats.average:.1f}")
+        values = [sample.bpm for sample in samples]
+        self.minimum_text.set(str(min(values)))
+        self.maximum_text.set(str(max(values)))
+        self.average_text.set(f"{sum(values) / len(values):.1f}")
 
-    def _draw_chart(self) -> None:
+    def _draw_chart(self, samples: tuple[HeartRateSample, ...] | None = None) -> None:
         canvas = self.chart
         canvas.delete("all")
         width = max(canvas.winfo_width(), 200)
@@ -527,9 +594,14 @@ class HeartRateBridgeApp:
         for index in range(5):
             y = top + (bottom - top) * index / 4
             canvas.create_line(left, y, right, y, fill=CHART_GRID)
-        canvas.create_text(left, bottom + 13, text="-10 分钟", anchor="w", fill=MUTED, font=("Microsoft YaHei UI", 7))
+        minutes = self.chart_minutes.get()
+        canvas.create_text(
+            left, bottom + 13, text=f"-{minutes} 分钟", anchor="w",
+            fill=MUTED, font=("Microsoft YaHei UI", 7),
+        )
         canvas.create_text(right, bottom + 13, text="现在", anchor="e", fill=MUTED, font=("Microsoft YaHei UI", 7))
-        samples = self.history.samples()
+        if samples is None:
+            samples = self.diagnostic_csv.read_window(int(time.time() * 1_000), minutes)
         if not samples:
             canvas.create_text(width / 2, height / 2, text="等待真实心率数据", fill=MUTED, font=("Microsoft YaHei UI", 10))
             return
@@ -539,10 +611,11 @@ class HeartRateBridgeApp:
         if high - low < 20:
             high = low + 20
         now_ms = int(time.time() * 1_000)
-        start_ms = now_ms - self.history.window_ms
+        window_ms = minutes * 60_000
+        start_ms = now_ms - window_ms
         points: list[float] = []
         for sample in samples:
-            x = left + (sample.epoch_ms - start_ms) / self.history.window_ms * (right - left)
+            x = left + (sample.epoch_ms - start_ms) / window_ms * (right - left)
             y = bottom - (sample.bpm - low) / (high - low) * (bottom - top)
             points.extend((x, y))
         canvas.create_text(left - 5, top, text=str(high), anchor="e", fill=MUTED, font=("Segoe UI", 7))
@@ -573,14 +646,15 @@ class HeartRateBridgeApp:
         self.log.configure(state="disabled")
 
     def close(self) -> None:
-        if len(self.csv_samples) > self.csv_exported_count:
+        if self.diagnostic_csv.has_unexported_rows:
             should_close = messagebox.askyesno(
                 "尚有未导出的 CSV 数据",
-                f"还有 {len(self.csv_samples) - self.csv_exported_count} 条记录未导出。\n"
-                "程序不会自动创建文件，确定直接退出吗？",
+                f"还有 {self.diagnostic_csv.row_count - self.diagnostic_csv.exported_row_count} 条记录未导出。\n"
+                "程序不会自动导出到用户文件，确定直接退出吗？",
             )
             if not should_close:
                 return
+        self.diagnostic_csv.stop()
         runtime, self.runtime = self.runtime, None
         if runtime is not None:
             runtime.stop()

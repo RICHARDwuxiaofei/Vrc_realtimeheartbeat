@@ -32,6 +32,7 @@ class BridgeRuntime:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._forward_osc = config.forward_osc
+        self._diagnostic_mode = False
         self._engine = BridgeEngine(self._send_osc)
         self._engine_lock = threading.RLock()
         self.bound_port = 0
@@ -65,6 +66,9 @@ class BridgeRuntime:
 
     def set_forward_osc(self, enabled: bool) -> None:
         self._forward_osc = bool(enabled)
+
+    def set_diagnostic_mode(self, enabled: bool) -> None:
+        self._diagnostic_mode = bool(enabled)
 
     def stop(self) -> None:
         self._stop.set()
@@ -114,7 +118,7 @@ class BridgeRuntime:
             now_ms = _now_ms()
             try:
                 packet = parse_packet(data)
-                receiver.sendto(build_ack(packet.sequence, now_ms), sender)
+                receiver.sendto(build_ack(packet.sequence, now_ms, self._diagnostic_mode), sender)
                 with self._engine_lock:
                     result = self._engine.accept(packet, now_ms)
                 self._emit(

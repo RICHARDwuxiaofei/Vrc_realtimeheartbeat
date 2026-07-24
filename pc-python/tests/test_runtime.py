@@ -25,12 +25,32 @@ def test_udp_runtime_returns_matching_ack_and_reports_packet():
         ).encode()
         client.sendto(payload, ("127.0.0.1", runtime.bound_port))
         ack, _ = client.recvfrom(1024)
-        assert json.loads(ack)["sequence"] == 77
+        ack_payload = json.loads(ack)
+        assert ack_payload["sequence"] == 77
+        assert ack_payload["diagnosticMode"] is False
         assert received.wait(2)
         packet_event = next(data for kind, data in events if kind == "packet")
         assert packet_event["packet"].bpm == 72
         assert packet_event["sender"] == "127.0.0.1"
     finally:
+        runtime.stop()
+
+
+def test_udp_ack_requests_diagnostic_payload_only_after_toggle():
+    runtime = BridgeRuntime(RuntimeConfig(listen_host="127.0.0.1", listen_port=0, forward_osc=False))
+    runtime.start()
+    runtime.set_diagnostic_mode(True)
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    client.settimeout(2)
+    try:
+        payload = json.dumps(
+            {"type": "phone_diagnostic", "sequence": 88, "sampleEpochMillis": 1, "bpm": 72}
+        ).encode()
+        client.sendto(payload, ("127.0.0.1", runtime.bound_port))
+        ack, _ = client.recvfrom(1024)
+        assert json.loads(ack)["diagnosticMode"] is True
+    finally:
+        client.close()
         runtime.stop()
 
 

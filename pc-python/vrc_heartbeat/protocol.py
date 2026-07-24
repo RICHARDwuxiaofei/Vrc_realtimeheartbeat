@@ -70,9 +70,14 @@ def parse_packet(data: bytes | str) -> HeartRatePacket:
     )
 
 
-def build_ack(sequence: int, now_ms: int) -> bytes:
+def build_ack(sequence: int, now_ms: int, diagnostic_mode: bool = False) -> bytes:
     return json.dumps(
-        {"type": "pc_ack", "sequence": sequence, "pcEpochMillis": now_ms},
+        {
+            "type": "pc_ack",
+            "sequence": sequence,
+            "pcEpochMillis": now_ms,
+            "diagnosticMode": diagnostic_mode,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")

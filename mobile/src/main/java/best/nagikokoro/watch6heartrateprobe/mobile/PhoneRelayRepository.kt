@@ -42,6 +42,11 @@ data class PhoneRelayState(
     val throttledCount: Long = 0,
     val diagnosticRunning: Boolean = false,
     val diagnosticStatus: String = "尚未诊断",
+    val diagnosticMode: Boolean = false,
+    val watchRawBpm: Double? = null,
+    val watchAccuracy: String? = null,
+    val watchBatteryPercent: Int? = null,
+    val watchScreenInteractive: Boolean? = null,
 )
 
 object PhoneRelayRepository {
@@ -51,6 +56,8 @@ object PhoneRelayRepository {
     private var pendingForward: PendingForward? = null
     private var forwardWorkerRunning = false
     private var lastHeartRateForwardElapsed = 0L
+    private var lastWatchDiagnosticNodeId: String? = null
+    private var lastWatchDiagnosticMode: Boolean? = null
     private val mutableState = MutableStateFlow(PhoneRelayState())
     val state = mutableState.asStateFlow()
     private var appContext: Context? = null
@@ -132,10 +139,15 @@ object PhoneRelayRepository {
         }
         val sequence = json.optLong("sequence", -1L)
         if (sequence >= 0 && mutableState.value.lastSequence == sequence) {
-            Log.i(TAG, "Duplicate Data Layer sequence=$sequence ignored")
+            if (mutableState.value.diagnosticMode) {
+                Log.i(TAG, "Duplicate Data Layer sequence=$sequence ignored")
+            }
             return
         }
-        Log.i(TAG, "Watch sample accepted type=${json.optString("type")} sequence=$sequence source=$sourceNodeId")
+        val diagnosticMode = mutableState.value.diagnosticMode
+        if (diagnosticMode) {
+            Log.i(TAG, "Watch sample accepted type=${json.optString("type")} sequence=$sequence source=$sourceNodeId")
+        }
         val bpm = json.optInt("bpm", -1).takeIf { it > 0 }
         val sampleMillis = json.optLong("sampleEpochMillis", 0L).takeIf { it > 0 }
         val watchRelayInterval = json.optInt("watchRelayIntervalSeconds", 0).takeIf { it in 1..30 }
@@ -145,8 +157,15 @@ object PhoneRelayRepository {
             mutableState.value.forwardIntervalSeconds,
             watchRelayInterval ?: 0,
         )
-        json.put("phoneReceivedEpochMillis", phoneReceiveMillis)
-        json.put("phoneLocalIp", findLocalIpv4())
+        if (diagnosticMode) {
+            json.put("diagnosticMode", true)
+            json.put("phoneReceivedEpochMillis", phoneReceiveMillis)
+            json.put("phoneLocalIp", findLocalIpv4())
+            json.put("phoneNetworkType", networkType(context))
+            json.put("phoneVpnActive", isVpnActive(context))
+        } else {
+            DIAGNOSTIC_FIELDS.forEach(json::remove)
+        }
         json.put("phoneForwardIntervalSeconds", effectiveForwardInterval)
         update {
             it.copy(
@@ -159,10 +178,27 @@ object PhoneRelayRepository {
                 lastPhoneReceiveMillis = phoneReceiveMillis,
                 watchRelayIntervalSeconds = watchRelayInterval ?: it.watchRelayIntervalSeconds,
                 watchRelayMode = watchRelayMode ?: it.watchRelayMode,
+                watchRawBpm = if (diagnosticMode && json.has("rawBpm")) json.optDouble("rawBpm") else it.watchRawBpm,
+                watchAccuracy = if (diagnosticMode) {
+                    json.optString("accuracy").takeIf(String::isNotBlank)
+                } else {
+                    it.watchAccuracy
+                },
+                watchBatteryPercent = if (diagnosticMode && json.has("watchBatteryPercent")) {
+                    json.optInt("watchBatteryPercent").takeIf { value -> value >= 0 }
+                } else {
+                    it.watchBatteryPercent
+                },
+                watchScreenInteractive = if (diagnosticMode && json.has("watchScreenInteractive")) {
+                    json.optBoolean("watchScreenInteractive")
+                } else {
+                    it.watchScreenInteractive
+                },
                 lastError = "--",
             )
         }
         val isRealHeartRate = json.optString("type") == "heart_rate"
+        syncDiagnosticModeToWatch(context, sourceNodeId, diagnosticMode)
         if (isRealHeartRate && !shouldForwardHeartRate()) {
             update { it.copy(throttledCount = it.throttledCount + 1) }
             return
@@ -175,6 +211,10 @@ object PhoneRelayRepository {
         refreshNetwork()
         val state = mutableState.value
         when {
+            !state.diagnosticMode -> {
+                update { it.copy(diagnosticRunning = false, diagnosticStatus = "失败：请先开启诊断模式") }
+                return
+            }
             !state.forwardingEnabled -> {
                 update { it.copy(diagnosticRunning = false, diagnosticStatus = "失败：发送到电脑已暂停") }
                 return
@@ -209,6 +249,9 @@ object PhoneRelayRepository {
             .put("watchBatteryPercent", -1)
             .put("watchScreenInteractive", true)
             .put("phoneLocalIp", findLocalIpv4())
+            .put("phoneNetworkType", state.networkType)
+            .put("phoneVpnActive", state.vpnActive)
+            .put("diagnosticMode", true)
         forward(
             context,
             null,
@@ -217,6 +260,26 @@ object PhoneRelayRepository {
             watchAckRequested = false,
             diagnostic = true,
         )
+    }
+
+    fun isDiagnosticMode(): Boolean = mutableState.value.diagnosticMode
+
+    fun setDiagnosticMode(enabled: Boolean) {
+        val context = appContext ?: return
+        update {
+            it.copy(
+                diagnosticMode = enabled,
+                diagnosticRunning = if (enabled) it.diagnosticRunning else false,
+                diagnosticStatus = if (enabled) "诊断模式已开启，等待链路数据" else "诊断模式未开启",
+                watchRawBpm = if (enabled) it.watchRawBpm else null,
+                watchAccuracy = if (enabled) it.watchAccuracy else null,
+                watchBatteryPercent = if (enabled) it.watchBatteryPercent else null,
+                watchScreenInteractive = if (enabled) it.watchScreenInteractive else null,
+                watchRelayMode = if (enabled) it.watchRelayMode else null,
+            )
+        }
+        val nodeId = mutableState.value.watchNodeId.takeUnless { it == "--" }
+        if (nodeId != null) syncDiagnosticModeToWatch(context, nodeId, enabled)
     }
 
     fun sendTestPacket() = runDiagnostics()
@@ -312,7 +375,9 @@ object PhoneRelayRepository {
                 Log.i(TAG, "Forward skipped after pause sequence=$sequence")
                 return
             }
-            Log.i(TAG, "Forwarding sequence=$sequence to ${request.targetIp}:${request.targetPort}")
+            if (mutableState.value.diagnosticMode || request.diagnostic) {
+                Log.i(TAG, "Forwarding sequence=$sequence to ${request.targetIp}:${request.targetPort}")
+            }
             DatagramSocket().use { socket ->
                 socket.soTimeout = 1_000
                 val bytes = request.json.toString().toByteArray(Charsets.UTF_8)
@@ -326,7 +391,18 @@ object PhoneRelayRepository {
                 pcAck = ack.optString("type") == "pc_ack" &&
                     ack.optLong("sequence", Long.MIN_VALUE) == sequence
                 if (!pcAck) error = "电脑回执内容不匹配"
-                Log.i(TAG, "PC acknowledgement sequence=$sequence matched=$pcAck")
+                if (ack.has("diagnosticMode")) {
+                    val requestedMode = ack.optBoolean("diagnosticMode", false)
+                    if (requestedMode != mutableState.value.diagnosticMode) {
+                        setDiagnosticMode(requestedMode)
+                    }
+                    val nodeId = request.watchNodeId
+                        ?: mutableState.value.watchNodeId.takeUnless { it == "--" }
+                    if (nodeId != null) syncDiagnosticModeToWatch(context, nodeId, requestedMode)
+                }
+                if (mutableState.value.diagnosticMode || request.diagnostic) {
+                    Log.i(TAG, "PC acknowledgement sequence=$sequence matched=$pcAck")
+                }
             }
         } catch (failure: Throwable) {
             val detail = failure.message ?: failure.javaClass.simpleName
@@ -370,15 +446,44 @@ object PhoneRelayRepository {
             .put("pcAck", pcAck)
             .put("phoneEpochMillis", System.currentTimeMillis())
             .put("error", error)
+            .put("diagnosticMode", mutableState.value.diagnosticMode)
             .toString()
             .toByteArray(Charsets.UTF_8)
         Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.ACK_PATH, payload)
             .addOnSuccessListener {
-                Log.i(TAG, "Phone acknowledgement queued to watch node=$nodeId sequence=$sequence pcAck=$pcAck")
+                if (mutableState.value.diagnosticMode) {
+                    Log.i(TAG, "Phone acknowledgement queued to watch node=$nodeId sequence=$sequence pcAck=$pcAck")
+                }
             }
             .addOnFailureListener { failure ->
                 Log.e(TAG, "Phone acknowledgement failed node=$nodeId sequence=$sequence", failure)
                 update { it.copy(lastError = "回传手表失败：${failure.message ?: failure.javaClass.simpleName}") }
+            }
+    }
+
+    private fun syncDiagnosticModeToWatch(context: Context, nodeId: String, enabled: Boolean) {
+        synchronized(pendingForwardLock) {
+            if (lastWatchDiagnosticNodeId == nodeId && lastWatchDiagnosticMode == enabled) return
+            lastWatchDiagnosticNodeId = nodeId
+            lastWatchDiagnosticMode = enabled
+        }
+        val payload = JSONObject()
+            .put("version", 1)
+            .put("type", "diagnostic_mode")
+            .put("diagnosticMode", enabled)
+            .put("phoneEpochMillis", System.currentTimeMillis())
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.CONTROL_PATH, payload)
+            .addOnFailureListener { failure ->
+                synchronized(pendingForwardLock) {
+                    if (lastWatchDiagnosticNodeId == nodeId && lastWatchDiagnosticMode == enabled) {
+                        lastWatchDiagnosticNodeId = null
+                        lastWatchDiagnosticMode = null
+                    }
+                }
+                Log.e(TAG, "Failed to sync diagnostic mode to watch", failure)
+                update { it.copy(lastError = "同步手表诊断模式失败：${failure.message}") }
             }
     }
 
@@ -425,4 +530,17 @@ object PhoneRelayRepository {
     )
 
     private const val TAG = "HR_RELAY"
+    private val DIAGNOSTIC_FIELDS = listOf(
+        "diagnosticMode",
+        "watchReceivedEpochMillis",
+        "rawBpm",
+        "accuracy",
+        "watchBatteryPercent",
+        "watchScreenInteractive",
+        "watchRelayMode",
+        "phoneReceivedEpochMillis",
+        "phoneLocalIp",
+        "phoneNetworkType",
+        "phoneVpnActive",
+    )
 }
