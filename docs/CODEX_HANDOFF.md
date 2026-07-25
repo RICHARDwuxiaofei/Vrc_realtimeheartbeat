@@ -1,6 +1,10 @@
 # CODEX 交接文档
 
 > 历史归档提示（2026-07-25）：本文保留早期真机验证、问题演变和原始结论，开头的路径、分支、版本与“当前架构”描述已经过时。继续开发必须先读 [NEW_PC_HANDOFF.md](NEW_PC_HANDOFF.md)，当前候选分支为 `codex/v1.1.0-diagnostics-ready`，版本为 `1.1.0`。本轮变化见仓库根目录 [CHANGELOG.md](../CHANGELOG.md)。
+>
+> 2026-07-26 补充：已实现待真机验收的小米手环 BLE“共享心率”来源，包括 Android 手机中转和 Python Windows 直连两条可切换链路。不要按本文早期“只有 Galaxy Watch/必须手机中转”的描述重做；设计决策、官方接口限制和测试边界见 [XIAOMI_BAND.md](XIAOMI_BAND.md)。
+>
+> 2026-07-26 收敛：旧 C# WinForms 和 PowerShell Windows 接收器已经删除，桌面端只维护 `pc-python`。应用图标迁移到 `pc-python/assets`，独立手表报告工具迁移到 `tools/WatchTestReport.ps1`。本文后面出现的 C# 内容只属于历史测试记录，不能再当作当前路径或构建说明。
 
 最后核对时间：2026-07-21（Asia/Hong_Kong）
 
@@ -16,7 +20,7 @@ Android applicationId（手表与手机共用）：`best.nagikokoro.watch6heartr
 
 ## 0. 最终目标与当前边界
 
-最终目标是从 Samsung Galaxy Watch 获取真实心率，在正常佩戴、手表息屏、Activity 后台的情况下持续传输，由手表作为 BLE GATT 外设直接发送到 Windows，再通过 VRChat OSC 驱动 Avatar 参数。手机 Data Layer 中继是当前已实现的诊断/备用链路，不是最终 BLE 直连方案。Unity 模型、Animator 与 Avatar 显示由项目使用者维护，本仓库负责到 OSC 参数接入为止。
+最终目标是把穿戴设备真实心率稳定送到 Windows，再通过 VRChat OSC 驱动 Avatar 参数。Galaxy Watch 当前走手机 Data Layer 中继；小米手环既可走 Android BLE → UDP 中转，也可由 Python Windows 端直接订阅固件“共享心率”。Unity 模型、Animator 与 Avatar 显示由项目使用者维护，本仓库负责到 OSC 参数接入为止。
 
 当前已经实现了各层代码，并完成新的 Health Services 低功耗路径 20 分钟正常佩戴测试，但尚未完成 60 分钟正式续航和 VRChat 实收验证。2026-07-21 已确认 Galaxy Watch6 支持 `HEART_RATE_5_SECONDS`；普通模式仅使用 `ExerciseClient`，不注册直接心率传感器、不持有手动 WakeLock，息屏时仍保持约 1 Hz 真实采样和约 5 秒批量交付。旧的直接传感器 + 有界 WakeLock 仅保留为明确标注的高功耗诊断实验，不属于日常路径。
 
@@ -34,7 +38,7 @@ Android applicationId（手表与手机共用）：`best.nagikokoro.watch6heartr
 - 手机逐序号接收；VPN 已由用户关闭。手机 APK 已修复双 listener 并发去重竞态，并把 PC 离线时的转发队列改为“当前在途 + 最新待发”，不再积压数百条过期心率。
 - Windows `VrcRealtimeHeartbeat.exe` 已在 `192.168.100.188:9123` 实际接收手机 `192.168.100.150` 的真实心率，并逐包返回匹配 ACK；窗口显示实时 BPM 和约 1 秒级端到端数据年龄。
 - 2026-07-21 三端 UI 已统一为 PulseLink 深色界面并加入应用图标；Windows EXE 升至界面版本 v0.3。手机新增 `1/2/5/10/30 秒`转发间隔（默认 5 秒）和暂停/恢复。实测手机测试包在运行状态到达 PC，暂停后 PC 计数不变，恢复后计数继续增加。
-- 当前尚未完成 VRChat 实际接收、20 分钟新实时模式测试、60 分钟正式续航、断线重连及最终 BLE 直连 PC。
+- 当前尚未完成 VRChat 实际接收、20 分钟新实时模式测试、60 分钟正式续航，以及小米手环 Windows 直连的真机通知/重连验收。
 
 ## 1. 当前系统架构
 
@@ -50,7 +54,7 @@ Galaxy Watch6 PPG / Health Services + SensorManager
      - 只选择 capability=heart_rate_phone_relay 且 isNearby 的手机节点
   -> Android phone app (:mobile)
   -> UDP JSON over LAN，默认目标 PC_PORT=9123
-  -> Windows 原生 EXE bridge（C# WinForms；旧 PowerShell 版仅作回退）
+  -> Windows Python 单文件 EXE（手机 UDP / 小米手环 BLE 两种互斥输入）
   -> OSC UDP，固定目标 IP 127.0.0.1，默认端口 9000
   -> VRChat Avatar Parameters
   -> Unity Animator / Expression Parameters / Avatar 显示组件（尚未实现）
@@ -64,11 +68,11 @@ Galaxy Watch6 PPG / Health Services + SensorManager
 - PC -> VRChat OSC：代码已实现；EXE 的 UDP 输入、PC ACK 和 OSC 127.0.0.1 回环集成测试已通过，但没有仓库证据证明 VRChat 实际收到。
 - Avatar 参数与可视化：仓库中没有 Unity/Avatar 文件，尚未开始。
 
-当前没有实现 Watch 直接连接 PC，也没有自定义 BLE/GATT 链路。Data Layer 的底层承载由 Google Play services 和配对设备管理，代码不能证明或强制“始终只走蓝牙”；不要把当前方案描述成自研 BLE 协议。
+Galaxy Watch 没有实现自定义 BLE/GATT 直连；Data Layer 的底层承载由 Google Play services 和配对设备管理，不能描述成自研 BLE 协议。小米手环则使用固件公开的标准 0x180D/0x2A37“共享心率”，Python Windows 端已实现直接 GATT Client；两者不要混为一谈。
 
 2026-07-20 后续审计已补充 60 分钟正式测试入口、已佩戴/未佩戴场景预检、真正的偶数样本中位数、息屏专用交付延迟分位数，以及缓存/亮屏补发证据字段。手机和手表的 Data Layer manifest listener 已改用 `MESSAGE_RECEIVED`；两端构建、单元测试和 Lint 已通过。这些代码改动尚需新的佩戴真机测试结果，不能替代实测。
 
-同日进一步把后台测试的 SharedPreferences 同步提交限制在测试开始和结束边界；1 Hz 回调期间改为异步提交，原始 JSONL 仍逐事件落盘，以降低测试记录器自身阻塞后续回调的风险。电脑端新增 `pc-bridge/WatchTestReport.ps1`，可在测试结束后不经过手机直接从手表导出报告，并从原始 JSONL 独立复算采样间隔、息屏交付延迟和最长无心率回调。该工具不得在正式息屏窗口内运行。
+同日进一步把后台测试的 SharedPreferences 同步提交限制在测试开始和结束边界；1 Hz 回调期间改为异步提交，原始 JSONL 仍逐事件落盘，以降低测试记录器自身阻塞后续回调的风险。独立工具 `tools/WatchTestReport.ps1` 可在测试结束后不经过手机直接从手表导出报告，并从原始 JSONL 独立复算采样间隔、息屏交付延迟和最长无心率回调。该工具不得在正式息屏窗口内运行。
 
 ## 2. 各端代码状态
 
@@ -76,7 +80,7 @@ Galaxy Watch6 PPG / Health Services + SensorManager
 |---|---|---|
 | 手表端应用 | 短时实时链路已验证 / 待长测 | 两种 Health Services 模式、直接唤醒型心率传感器、权限、日志、后台测试记录、健康前台服务和 Data Layer 发送均已实现。MeasureClient 仅保留为对照；ExerciseClient 单独回调会息屏批处理，直接传感器路径已在 Dozing + Activity STOP 下约 1 Hz 取得并发送真实 BPM。 |
 | Android 手机端 | 短时实时链路已验证 / 待长测 | Material 3 UI、Data Layer listener、PC IP/端口持久化、UDP 转发、1 秒 ACK、ACK 回手表、VPN 提示、原子去重和最新包合并均已实现。手机持续接收约 1 Hz 样本，向 PC 默认每 5 秒发送最新值，可选 1/2/5/10/30 秒并可暂停/恢复。已安装在 SM-S928B。 |
-| PC 中转程序 | 真实心率接收已验证 / 待 VRChat | C# WinForms 单 EXE 已实现 UDP 9123、ACK、PulseLink 中文 BPM UI、内嵌程序图标、按手机发送间隔自适应的真实数据超时和 OSC；已实际接收息屏真实 BPM并回 ACK。OSC 编码/回环已测，VRChat 实收未验证。 |
+| PC 中转程序 | 功能与自动化已验证 / 待 VRChat 与小米真机 | Python 单文件 EXE 支持 UDP 9123/ACK、手机中转与小米手环 BLE 直连互斥选择、中文 BPM UI、动态超时、诊断曲线/CSV 和 OSC。源码/打包自检、UDP 回环和 WinRT 扫描已通过；VRChat 与小米手环通知尚未真机验证。 |
 | VRChat OSC 输出模块 | 部分完成 / 待验证 | EXE 能按顺序发送三位数 Int32 参数 `HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`，并发送 `HRValid`、本地节拍 `HRPulse` 及旧参数兼容包；已验证 OSC UDP 包实际抵达本机监听器，未验证 VRChat 或 Avatar 实际响应。 |
 | Unity / Avatar 配置 | 尚未开始 | 仓库无 Unity 工程、Animator、Expression Parameters、Expressions Menu、材质或显示组件。当前不能在 Avatar 上显示 BPM。 |
 | 旧 `onStop` 注销方案 | 已废弃 | 早期 Activity `onStop` 主动注销 `MeasureCallback` 的路径已确认并移除。现有 `onPause`、`onStop`、Ambient、screen-off 只记录日志。 |
@@ -220,7 +224,7 @@ PC 端当前配置和参数：
 - 只有 `type == "heart_rate"` 才发送 BPM、数位、Valid 和 Pulse；`relay_test` 和 `phone_test` 只显示链路测试并 ACK，不进入 OSC，也不会延长真实心率有效期。
 - 当前三位数显示把完整 BPM 钳制到 `0..999`，并按 `HR_Value → HR_Hundreds → HR_Tens → HR_Ones` 顺序发送；旧版 `HeartRate` 参数仍保留兼容。
 - 没有平滑、滞回、限速或 BPM 跳动抑制。
-- `VrcRealtimeHeartbeat.exe --self-test` 检查全部目标 OSC 地址和 4 字节对齐。本地集成测试另已证明 EXE 能对真实格式 UDP 包回 ACK，并向 UDP 9000 发出全部目标地址；这仍不等于 VRChat 实收。
+- `VrcRealtimeHeartbeat-Python.exe --self-test` 检查协议、目标 OSC 地址、二维码和 BLE 打包依赖；`--ble-scan-self-test` 可在有蓝牙的 Windows 11 上验证打包后的 WinRT 扫描。本地集成测试另已证明 EXE 能对真实格式 UDP 包回 ACK，并向 UDP 9000 发出全部目标地址；这仍不等于 VRChat 实收。
 - 仓库没有 Unity Animator、Expression Parameters、Expressions Menu 或 Avatar 显示组件。
 - 当前没有证据表明 VRChat 已实际收到参数，更没有证据表明 Avatar 已显示 BPM。
 
@@ -330,10 +334,12 @@ PC 端当前配置和参数：
 
 ### PC / OSC
 
-- `pc-bridge/src/HeartRateBridge/Program.cs`：当前 C# WinForms EXE 源码，UDP 9123、ACK、OSC 127.0.0.1:9000、数位拆分、HRPulse 和 stale。
-- `pc-bridge/Build-Exe.ps1`：本地/GitHub 共用的单 EXE 构建及协议自测入口。
-- `pc-bridge/HeartRateBridge.ps1`、`Start Heart Rate Bridge.cmd`：早期 PowerShell 版回退入口。
-- `pc-bridge/README.md`：PC 使用与 OSC 参数摘要。
+- `pc-python/vrc_heartbeat/ble_direct.py`：Windows Bleak/WinRT 事件线程、0x180D 扫描、0x2A37 订阅、设备记忆所需事件和 5 秒重连。
+- `pc-python/vrc_heartbeat/input_sources.py`：手机 UDP / 小米手环电脑 BLE 两种互斥输入来源。
+- `pc-python/vrc_heartbeat/runtime.py`：两种输入共用的 OSC、动态失效和数据包事件状态机；直连普通模式不附加设备身份，诊断模式才增加 BLE 设备/Profile 字段。
+- `pc-python/vrc_heartbeat/app.py`：输入来源切换、BLE 扫描/选择/连接 UI，以及复用诊断曲线、统计和 CSV。
+- `pc-python/assets/`：Python 源码运行和 PyInstaller 共用的图标资源。
+- `tools/WatchTestReport.ps1`：从手表导出并独立复算后台测试报告；与 Windows 接收器无关。
 
 ### 构建、配置、日志和说明
 
@@ -360,13 +366,14 @@ $env:ANDROID_SDK_ROOT = 'C:\Users\wrq18\AppData\Local\Android\Sdk'
 .\gradlew.bat :app:assembleDiagnosticDebug :app:assembleProductionDebug :mobile:assembleDebug --no-daemon
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File '.\pc-bridge\HeartRateBridge.ps1' -SelfTest
+  -File '.\pc-python\Build-Exe.ps1' `
+  -Python '.\pc-python\.venv\Scripts\python.exe'
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File '.\pc-bridge\Build-Exe.ps1'
+  -File '.\tools\WatchTestReport.ps1' -SelfTest
 ```
 
-交接时复跑结果：Android `BUILD SUCCESSFUL in 31s`，76 tasks up-to-date；旧 PC 脚本输出 `HeartRateBridge protocol self-test: PASS`。2026-07-21 新 EXE 构建及内置协议自测通过，并以 BPM=72 的真实格式 UDP 包完成 ACK 和全部 OSC 地址回环验证。本地 Gradle 有 SDK XML v4/旧解析器 warning，但不阻断构建。
+最新候选复跑结果以 [NEW_PC_HANDOFF.md](NEW_PC_HANDOFF.md) 为准。Python EXE 构建、内置协议自测、BLE 打包扫描和真实格式 UDP/OSC 回环已通过；本地 Gradle 的 SDK XML v4/旧解析器 warning 不阻断构建。
 
 APK：
 
@@ -507,7 +514,7 @@ VRChat 当前只能这样做真实验证：在 VRChat Action Menu 开启 OSC，�
 - Watch 模块新增 `diagnostic` 和 `production` 两个 product flavor。测试版保留探针、原始数据、续航测试和链路诊断；正式版固定使用 ExerciseClient，只显示 BPM、后台传输状态、手机状态、样本年龄、电量和启停按钮。
 - 两个 Watch APK 必须保持同一 applicationId 和签名，才能继续与手机 Wear Data Layer 通信。因此它们是可相互覆盖、可回退的两个安装包，不能在同一块表上并存。
 - 正式版入口为 `ProductionMainActivity`；production manifest 不导出 `RelayTestActivity`，并移除 `WAKE_LOCK` 权限。服务还有 `BuildConfig.PRODUCTION_EDITION` 编译期防线，覆盖安装保留旧测试状态时也不会进入高耗电诊断路径。前台服务通知通过包管理器查找当前 flavor 的 launcher，避免写死测试入口。
-- Windows 首选实现新增到 `pc-python/`。运行时只依赖 Python 标准库，开发测试与打包使用 pytest、PyInstaller；旧 C# WinForms 版完整保留在 `pc-bridge/`。
+- Windows 首选实现位于 `pc-python/`，运行时依赖 `qrcode[pil]` 和 `bleak`，开发测试与打包还使用 pytest、PyInstaller。旧 C# WinForms 在当时曾保留，已于 `v1.1.0` 候选开发中删除。
 - Python 版实现 UDP 回执、严格数据验证、动态超时、三位数 Int32 参数、兼容旧参数和 PC 本地 `HRPulse`。诊断包只显示链路成功并返回 ACK，不写入 Avatar 参数。
 - Python 本地测试覆盖协议、非法输入、OSC 编码、三位数拆分与顺序、超时、心跳脉冲、运行时开关和真实 UDP 回环。
-- GitHub Actions 已拆分为 Android、Python Windows、C# Windows 三个任务，同时产出 Watch 测试 APK、Watch 正式 APK、手机 APK、首选 Python EXE/ZIP 和旧 C# EXE/ZIP。
+- GitHub Actions 当前包含 Android 和 Python Windows 两个构建任务，产出 Watch 测试 APK、Watch 正式 APK、手机 APK和 Python EXE/ZIP。

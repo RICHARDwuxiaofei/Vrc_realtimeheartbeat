@@ -14,7 +14,9 @@ import webbrowser
 
 from . import __version__
 from .analytics import HeartRateSample
+from .ble_direct import BleHeartRateClient
 from .diagnostic_csv import DiagnosticCsvStore
+from .input_sources import INPUT_SOURCE_LABELS, PHONE_RELAY, XIAOMI_PC_BLE
 from .pairing import build_pairing_uri
 from .runtime import BridgeRuntime, RuntimeConfig
 from .settings import AppSettings, load_settings, save_settings
@@ -54,6 +56,10 @@ class HeartRateBridgeApp:
         self.settings = load_settings()
         self.runtime: BridgeRuntime | None = None
         self.events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self.ble_client = BleHeartRateClient(self._enqueue_event)
+        self.ble_devices: dict[str, tuple[str, str]] = {}
+        self.ble_connected = False
+        self.ble_scanning = False
         self.packet_count = 0
         self.diagnostic_csv = DiagnosticCsvStore()
         self.diagnostic_session_started = False
@@ -63,10 +69,20 @@ class HeartRateBridgeApp:
         self.listen_port = tk.StringVar(value=str(self.settings.listen_port))
         self.osc_port = tk.StringVar(value=str(self.settings.osc_port))
         self.forward_osc = tk.BooleanVar(value=self.settings.forward_osc)
+        self.input_source_label = tk.StringVar(value=INPUT_SOURCE_LABELS[self.settings.input_source])
+        saved_ble_label = (
+            f"{self.settings.ble_name or '已保存设备'} · {self.settings.ble_address}"
+            if self.settings.ble_address
+            else ""
+        )
+        self.ble_device_choice = tk.StringVar(value=saved_ble_label)
+        self.ble_status_text = tk.StringVar(value="直连模式未启用")
         self.diagnostic_mode = tk.BooleanVar(value=False)
         self.chart_minutes = tk.IntVar(value=1)
         self.bpm_text = tk.StringVar(value="--")
-        self.signal_text = tk.StringVar(value="等待手机数据")
+        self.signal_text = tk.StringVar(
+            value="等待手机数据" if self.settings.input_source == PHONE_RELAY else "等待小米手环 BLE"
+        )
         self.detail_text = tk.StringVar(value="尚未收到数据包")
         self.receiver_text = tk.StringVar(value="未启动")
         self.phone_text = tk.StringVar(value="--")
@@ -89,8 +105,8 @@ class HeartRateBridgeApp:
 
     def _configure_window(self) -> None:
         self.root.title("VRChat 心率桥 · Python")
-        self.root.geometry("940x900")
-        self.root.minsize(820, 780)
+        self.root.geometry("960x980")
+        self.root.minsize(840, 840)
         self.root.configure(background=BG)
         try:
             self.root.iconbitmap(_resource_path("heart-relay.ico"))
@@ -140,7 +156,7 @@ class HeartRateBridgeApp:
         ).pack(anchor="w")
         tk.Label(
             title_block,
-            text=f"Python 版 {__version__}   ·   Watch → Phone → PC",
+            text=f"Python 版 {__version__}   ·   Wearable → Phone / PC → OSC",
             bg=BG,
             fg=MUTED,
             font=("Microsoft YaHei UI", 8),
@@ -190,8 +206,8 @@ class HeartRateBridgeApp:
         tk.Label(self.status_column, text="连接状态", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
             anchor="w", padx=18, pady=(15, 7)
         )
-        self._status_row(self.status_column, "UDP 接收器", self.receiver_text)
-        self._status_row(self.status_column, "手机", self.phone_text)
+        self._status_row(self.status_column, "输入引擎", self.receiver_text)
+        self._status_row(self.status_column, "输入设备", self.phone_text)
         self._status_row(self.status_column, "VRChat OSC", self.osc_text)
 
         self.chart_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
@@ -224,6 +240,66 @@ class HeartRateBridgeApp:
         self.chart.pack(fill="x", padx=16, pady=(3, 13))
         self.chart.bind("<Configure>", lambda _event: self._draw_chart())
 
+        self.source_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        self.source_panel.pack(fill="x", pady=(11, 0))
+        tk.Label(
+            self.source_panel,
+            text="心率来源",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=6, sticky="w", padx=16, pady=(11, 7))
+        self.source_combo = ttk.Combobox(
+            self.source_panel,
+            textvariable=self.input_source_label,
+            values=list(INPUT_SOURCE_LABELS.values()),
+            state="readonly",
+            width=28,
+        )
+        self.source_combo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(16, 6), pady=(0, 8))
+        self.source_combo.bind("<<ComboboxSelected>>", self._change_input_source)
+        self.ble_device_combo = ttk.Combobox(
+            self.source_panel,
+            textvariable=self.ble_device_choice,
+            state="disabled",
+            width=34,
+        )
+        self.ble_device_combo.grid(row=1, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+        self.ble_device_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_source_controls())
+        self.ble_scan_button = ttk.Button(
+            self.source_panel,
+            text="扫描",
+            style="Secondary.TButton",
+            command=self.scan_ble_devices,
+            state="disabled",
+        )
+        self.ble_scan_button.grid(row=1, column=4, sticky="ew", padx=6, pady=(0, 8))
+        self.ble_connect_button = ttk.Button(
+            self.source_panel,
+            text="连接",
+            style="Primary.TButton",
+            command=self.connect_selected_ble_device,
+            state="disabled",
+        )
+        self.ble_connect_button.grid(row=1, column=5, sticky="ew", padx=(6, 16), pady=(0, 8))
+        tk.Label(
+            self.source_panel,
+            textvariable=self.ble_status_text,
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=2, column=0, columnspan=4, sticky="w", padx=16, pady=(0, 10))
+        self.ble_disconnect_button = ttk.Button(
+            self.source_panel,
+            text="断开 BLE",
+            style="Secondary.TButton",
+            command=self.disconnect_ble_device,
+            state="disabled",
+        )
+        self.ble_disconnect_button.grid(row=2, column=4, columnspan=2, sticky="e", padx=(6, 16), pady=(0, 10))
+        for column in range(6):
+            self.source_panel.grid_columnconfigure(column, weight=1)
+
         self.settings_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
         self.settings_panel.pack(fill="x", pady=(11, 0))
         settings_panel = self.settings_panel
@@ -251,9 +327,10 @@ class HeartRateBridgeApp:
             state="disabled",
         )
         self.avatar_test_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
-        ttk.Button(
+        self.qr_button = ttk.Button(
             settings_panel, text="显示配对二维码", style="Secondary.TButton", command=self.show_pairing_qr,
-        ).grid(row=2, column=4, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
+        )
+        self.qr_button.grid(row=2, column=4, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
         self.diagnostic_button = ttk.Button(
             settings_panel, text="一键诊断", style="Secondary.TButton", command=self.run_diagnostics,
             state="disabled",
@@ -278,6 +355,7 @@ class HeartRateBridgeApp:
             font=("Cascadia Mono", 8), padx=12, pady=8, state="disabled",
         )
         self.log.pack(fill="both", expand=True, padx=16, pady=(0, 13))
+        self._refresh_source_controls()
 
     def _stat_value(self, parent: tk.Widget, label: str, value: tk.StringVar, column: int) -> None:
         block = tk.Frame(parent, bg="#fafaf8")
@@ -302,36 +380,141 @@ class HeartRateBridgeApp:
         elif variable is self.osc_port:
             self.osc_port_entry = entry
 
+    def _selected_input_source(self) -> str:
+        selected = self.input_source_label.get()
+        return next(
+            (key for key, label in INPUT_SOURCE_LABELS.items() if label == selected),
+            PHONE_RELAY,
+        )
+
+    def _change_input_source(self, _event: tk.Event | None = None) -> None:
+        source = self._selected_input_source()
+        if source == self.settings.input_source:
+            self._refresh_source_controls()
+            return
+        was_running = self.runtime is not None and self.runtime.running
+        if was_running:
+            self.stop_receiver()
+        self.settings.input_source = source
+        self.packet_count = 0
+        self.bpm_text.set("--")
+        self.detail_text.set("尚未收到当前来源数据")
+        self.phone_text.set("--")
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self._append_log(f"保存心率来源失败：{exc}")
+        self._refresh_source_controls()
+        if source == XIAOMI_PC_BLE:
+            self.signal_text.set("等待小米手环 BLE")
+            self._append_log("已切换为电脑直连小米手环；手机中转心率已禁用")
+        else:
+            self.signal_text.set("等待手机数据")
+            self._append_log("已切换为手机 UDP 中转；电脑 BLE 已禁用")
+        if was_running:
+            self.root.after(100, self.start_receiver)
+
+    def _refresh_source_controls(self) -> None:
+        direct = self._selected_input_source() == XIAOMI_PC_BLE
+        running = self.runtime is not None and self.runtime.running
+        direct_running = direct and running
+        available = direct_running and not self.ble_connected and not self.ble_scanning
+        self.ble_device_combo.configure(state="readonly" if available else "disabled")
+        self.ble_scan_button.configure(state="normal" if available else "disabled")
+        self.ble_connect_button.configure(
+            state="normal" if available and self.ble_device_choice.get() in self.ble_devices else "disabled"
+        )
+        self.ble_disconnect_button.configure(
+            state="normal" if direct_running and self.ble_connected else "disabled"
+        )
+        self.qr_button.configure(state="disabled" if direct else "normal")
+        if not direct:
+            self.ble_status_text.set("直连模式未启用；继续使用手机 UDP 中转")
+
+    def scan_ble_devices(self) -> None:
+        if self._selected_input_source() != XIAOMI_PC_BLE:
+            return
+        if self.runtime is None or not self.runtime.running:
+            messagebox.showinfo("扫描小米手环", "请先启动接收器。")
+            return
+        self.ble_scan_button.configure(state="disabled")
+        self.ble_status_text.set("正在扫描标准心率设备…")
+        self.ble_client.scan()
+
+    def connect_selected_ble_device(self) -> None:
+        selected = self.ble_devices.get(self.ble_device_choice.get())
+        if selected is None:
+            messagebox.showinfo("连接小米手环", "请先扫描并选择一个心率设备。")
+            return
+        address, name = selected
+        self.ble_client.connect(address, name)
+
+    def disconnect_ble_device(self) -> None:
+        self.ble_client.disconnect()
+        self.ble_connected = False
+        self.ble_scanning = False
+        self.ble_status_text.set("已断开；可重新扫描或连接")
+        self.phone_text.set("--")
+
     def start_receiver(self) -> None:
         if self.runtime is not None and self.runtime.running:
             return
         try:
             listen_port = parse_port(self.listen_port.get())
             osc_port = parse_port(self.osc_port.get())
-            settings = AppSettings(listen_port, osc_port, self.forward_osc.get())
+            input_source = self._selected_input_source()
+            settings = AppSettings(
+                listen_port=listen_port,
+                osc_port=osc_port,
+                forward_osc=self.forward_osc.get(),
+                input_source=input_source,
+                ble_address=self.settings.ble_address,
+                ble_name=self.settings.ble_name,
+            )
             save_settings(settings)
             self.settings = settings
             self.runtime = BridgeRuntime(
-                RuntimeConfig(listen_port=listen_port, osc_port=osc_port, forward_osc=self.forward_osc.get()),
+                RuntimeConfig(
+                    listen_port=listen_port,
+                    osc_port=osc_port,
+                    forward_osc=self.forward_osc.get(),
+                    input_source=input_source,
+                ),
                 self._enqueue_event,
             )
             self.runtime.start()
             self.runtime.set_diagnostic_mode(self.diagnostic_mode.get())
+            if input_source == XIAOMI_PC_BLE:
+                if not self.ble_client.start():
+                    raise RuntimeError("Windows BLE 组件无法启动")
+                self.ble_client.scan(auto_connect_address=self.settings.ble_address)
+            else:
+                self.ble_client.stop()
             self.start_button.configure(state="disabled")
             self.stop_button.configure(state="normal")
             self.listen_port_entry.configure(state="disabled")
             self.osc_port_entry.configure(state="disabled")
-            self._append_log(f"开始监听 UDP 0.0.0.0:{listen_port}")
-        except (ValueError, OSError) as exc:
+            if input_source == XIAOMI_PC_BLE:
+                self.receiver_text.set("BLE 直连引擎")
+                self._append_log("电脑 BLE 直连已启动；正在扫描标准心率服务 0x180D")
+            else:
+                self._append_log(f"开始监听 UDP 0.0.0.0:{listen_port}")
+            self._refresh_source_controls()
+        except (ValueError, OSError, RuntimeError) as exc:
             if self.runtime is not None:
                 self.runtime.stop()
                 self.runtime = None
+            self.ble_client.stop()
             self.receiver_text.set("启动失败")
             self.signal_text.set("无法启动接收器")
             self.signal_label.configure(fg=ACCENT)
             self._append_log(f"启动失败：{exc}")
+            self._refresh_source_controls()
 
     def stop_receiver(self) -> None:
+        self.ble_client.stop()
+        self.ble_connected = False
+        self.ble_scanning = False
         runtime, self.runtime = self.runtime, None
         if runtime is not None:
             runtime.stop()
@@ -342,11 +525,12 @@ class HeartRateBridgeApp:
         self.receiver_text.set("已停止")
         self.signal_text.set("接收器已停止")
         self.signal_label.configure(fg=MUTED)
+        self._refresh_source_controls()
 
     def send_avatar_test(self) -> None:
         runtime = self.runtime
         if runtime is None or not runtime.running:
-            messagebox.showwarning("Avatar 参数测试", "请先启动 UDP 接收器。")
+            messagebox.showwarning("Avatar 参数测试", "请先启动接收器。")
             return
         if not self.forward_osc.get():
             messagebox.showwarning("Avatar 参数测试", "请先开启“发送到 VRChat OSC”。")
@@ -392,20 +576,30 @@ class HeartRateBridgeApp:
             messagebox.showinfo("一键诊断", "请先开启诊断模式。")
             return
         runtime = self.runtime
-        addresses = local_ipv4_addresses()
-        checks = [
-            ("本机 IPv4", addresses != ["--"], ", ".join(addresses)),
-            ("UDP 接收器", runtime is not None and runtime.running, self.receiver_text.get()),
-            ("VRChat OSC", self.forward_osc.get(), f"127.0.0.1:{self.osc_port.get()}"),
-            ("手机数据", self.packet_count > 0, self.phone_text.get()),
-        ]
+        direct = self._selected_input_source() == XIAOMI_PC_BLE
+        if direct:
+            checks = [
+                ("输入模式", True, "电脑直连小米手环 BLE"),
+                ("BLE 引擎", runtime is not None and runtime.running, self.receiver_text.get()),
+                ("小米手环", self.ble_connected, self.ble_status_text.get()),
+                ("真实心率", self.packet_count > 0, self.bpm_text.get() + " BPM"),
+                ("VRChat OSC", self.forward_osc.get(), f"127.0.0.1:{self.osc_port.get()}"),
+            ]
+        else:
+            addresses = local_ipv4_addresses()
+            checks = [
+                ("本机 IPv4", addresses != ["--"], ", ".join(addresses)),
+                ("UDP 接收器", runtime is not None and runtime.running, self.receiver_text.get()),
+                ("VRChat OSC", self.forward_osc.get(), f"127.0.0.1:{self.osc_port.get()}"),
+                ("手机数据", self.packet_count > 0, self.phone_text.get()),
+            ]
         lines = [f"{'✓' if passed else '✗'} {name}：{detail}" for name, passed, detail in checks]
         if all(passed for _, passed, _ in checks):
             result = "电脑端链路状态正常。"
         elif runtime is not None and runtime.running:
-            result = "接收器正常；未通过项可能只是手机尚未发送或 OSC 被关闭。"
+            result = "接收器正常；未通过项可能只是当前来源尚未发送或 OSC 被关闭。"
         else:
-            result = "请先启动接收器，再让手机运行“一键诊断”。"
+            result = "请先启动接收器，再连接当前选择的心率来源。"
         self._append_log("电脑诊断：" + "；".join(lines))
         messagebox.showinfo("一键诊断", result + "\n\n" + "\n".join(lines))
 
@@ -503,8 +697,83 @@ class HeartRateBridgeApp:
         if kind == "listening":
             self.receiver_text.set(f"监听 {data['port']}")
             return
+        if kind == "direct_ready":
+            self.receiver_text.set("BLE 直连引擎")
+            return
+        if kind == "ble_devices":
+            self.ble_devices.clear()
+            labels: list[str] = []
+            for device in data.get("devices", []):
+                label = f"{device['name']} · {device['address']} · {device['rssi']} dBm"
+                labels.append(label)
+                self.ble_devices[label] = (str(device["address"]), str(device["name"]))
+            self.ble_device_combo.configure(values=labels)
+            preferred = next(
+                (
+                    label
+                    for label, (address, _name) in self.ble_devices.items()
+                    if address == self.settings.ble_address
+                ),
+                labels[0] if labels else "",
+            )
+            self.ble_device_choice.set(preferred)
+            self.ble_scan_button.configure(state="normal")
+            self._refresh_source_controls()
+            return
+        if kind == "ble_status":
+            message = str(data.get("message", "BLE 状态已更新"))
+            self.ble_status_text.set(message)
+            self.ble_scanning = bool(data.get("scanning", False))
+            connected = bool(data.get("connected", False))
+            self.ble_connected = connected
+            self.phone_text.set(str(data.get("name", "小米手环 BLE")) if connected else "--")
+            if connected:
+                self.signal_text.set("BLE 已连接，等待心率")
+                self.signal_label.configure(fg=GOOD)
+                address = str(data.get("address", ""))
+                name = str(data.get("name", "小米手环"))
+                if address:
+                    self.settings.ble_address = address
+                    self.settings.ble_name = name
+                    try:
+                        save_settings(self.settings)
+                    except OSError as exc:
+                        self._append_log(f"保存 BLE 设备失败：{exc}")
+            self._append_log(message)
+            self._refresh_source_controls()
+            return
+        if kind == "ble_error":
+            message = str(data.get("message", "未知 BLE 错误"))
+            self.ble_connected = False
+            self.ble_scanning = False
+            self.ble_status_text.set(message)
+            self.signal_text.set("BLE 连接异常")
+            self.signal_label.configure(fg=ACCENT)
+            self.ble_scan_button.configure(state="normal")
+            self._append_log(message)
+            self._refresh_source_controls()
+            return
+        if kind == "ble_warning":
+            self._append_log(str(data.get("message", "BLE 数据警告")))
+            return
+        if kind == "ble_heart_rate":
+            runtime = self.runtime
+            if runtime is not None:
+                runtime.accept_direct_heart_rate(
+                    int(data["bpm"]),
+                    int(data["sample_epoch_ms"]),
+                    str(data.get("name", "小米手环")),
+                    str(data.get("address", "")),
+                )
+            return
         if kind == "packet":
             packet = data["packet"]
+            source = str(packet.payload.get("source", "galaxy_watch"))
+            source_text = {
+                "galaxy_watch": "Galaxy Watch",
+                "xiaomi_band_ble": "小米手环 BLE",
+                "xiaomi_band_pc_ble": "小米手环 → 电脑 BLE",
+            }.get(source, source)
             self.packet_count += 1
             self.phone_text.set(data["sender"])
             latency = int(data["latency_ms"])
@@ -528,11 +797,13 @@ class HeartRateBridgeApp:
             else:
                 self.signal_text.set("手机 → 电脑诊断通过")
                 self.signal_label.configure(fg=GOOD)
-            self.detail_text.set(f"数据包 {self.packet_count}   ·   端到端 {latency} ms")
+            self.detail_text.set(
+                f"{source_text}   ·   数据包 {self.packet_count}   ·   端到端 {latency} ms"
+            )
             if self.diagnostic_mode.get() or not packet.is_real_heart_rate:
                 self._append_log(
                     f"{packet.packet_type}  seq={packet.sequence}  bpm={packet.bpm}  "
-                    f"phone={data['sender']}  latency={latency}ms  ack=ok"
+                    f"source={source}  input={data['sender']}  latency={latency}ms  ack=ok"
                 )
             return
         if kind == "stale":
@@ -655,6 +926,7 @@ class HeartRateBridgeApp:
             if not should_close:
                 return
         self.diagnostic_csv.stop()
+        self.ble_client.stop()
         runtime, self.runtime = self.runtime, None
         if runtime is not None:
             runtime.stop()
@@ -689,7 +961,7 @@ def _resource_path(name: str) -> str:
     frozen_root = getattr(sys, "_MEIPASS", None)
     if frozen_root:
         return str(Path(frozen_root) / name)
-    return str(Path(__file__).resolve().parents[2] / "pc-bridge" / "assets" / name)
+    return str(Path(__file__).resolve().parents[1] / "assets" / name)
 
 
 def main() -> None:

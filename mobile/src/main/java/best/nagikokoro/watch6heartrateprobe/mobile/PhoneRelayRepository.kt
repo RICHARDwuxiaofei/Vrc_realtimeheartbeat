@@ -17,8 +17,10 @@ import java.net.InetAddress
 import java.net.NetworkInterface
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 data class PhoneRelayState(
+    val heartRateSource: HeartRateSource = HeartRateSource.GALAXY_WATCH,
     val targetIp: String = "",
     val targetPort: Int = RelayProtocol.DEFAULT_PC_PORT,
     val localIp: String = "--",
@@ -48,6 +50,12 @@ data class PhoneRelayState(
     val watchAccuracy: String? = null,
     val watchBatteryPercent: Int? = null,
     val watchScreenInteractive: Boolean? = null,
+    val xiaomiStatus: String = "尚未启用",
+    val xiaomiScanning: Boolean = false,
+    val xiaomiConnected: Boolean = false,
+    val xiaomiDeviceAddress: String? = null,
+    val xiaomiDeviceName: String? = null,
+    val xiaomiCandidates: List<XiaomiBandCandidate> = emptyList(),
 )
 
 object PhoneRelayRepository {
@@ -59,6 +67,7 @@ object PhoneRelayRepository {
     private var lastHeartRateForwardElapsed = 0L
     private var lastWatchDiagnosticNodeId: String? = null
     private var lastWatchDiagnosticMode: Boolean? = null
+    private val xiaomiSequence = AtomicLong(System.currentTimeMillis())
     private val mutableState = MutableStateFlow(PhoneRelayState())
     val state = mutableState.asStateFlow()
     private var appContext: Context? = null
@@ -68,6 +77,7 @@ object PhoneRelayRepository {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         update {
             it.copy(
+                heartRateSource = HeartRateSource.fromPreference(prefs.getString("heartRateSource", null)),
                 targetIp = prefs.getString("targetIp", "") ?: "",
                 targetPort = prefs.getInt("targetPort", RelayProtocol.DEFAULT_PC_PORT),
                 localIp = findLocalIpv4(),
@@ -75,6 +85,102 @@ object PhoneRelayRepository {
                 vpnActive = isVpnActive(context),
                 forwardingEnabled = prefs.getBoolean("forwardingEnabled", true),
                 forwardIntervalSeconds = prefs.getInt("forwardIntervalSeconds", 5).coerceIn(1, 30),
+                xiaomiDeviceAddress = prefs.getString("xiaomiDeviceAddress", null),
+                xiaomiDeviceName = prefs.getString("xiaomiDeviceName", null),
+            )
+        }
+    }
+
+    fun setHeartRateSource(source: HeartRateSource) {
+        val context = appContext ?: return
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putString("heartRateSource", source.wireName)
+        }
+        lastHeartRateForwardElapsed = 0L
+        update {
+            it.copy(
+                heartRateSource = source,
+                watchConnected = false,
+                currentBpm = null,
+                lastSampleMillis = null,
+                lastPhoneReceiveMillis = null,
+                watchRelayIntervalSeconds = null,
+                watchRelayMode = null,
+                xiaomiStatus = if (source == HeartRateSource.XIAOMI_BAND_BLE) {
+                    "准备连接小米手环"
+                } else {
+                    "尚未启用"
+                },
+                xiaomiScanning = false,
+                xiaomiConnected = false,
+                xiaomiCandidates = if (source == HeartRateSource.XIAOMI_BAND_BLE) {
+                    it.xiaomiCandidates
+                } else {
+                    emptyList()
+                },
+                lastError = "--",
+            )
+        }
+    }
+
+    fun isXiaomiMode(): Boolean =
+        mutableState.value.heartRateSource == HeartRateSource.XIAOMI_BAND_BLE
+
+    fun savedXiaomiDevice(): Pair<String, String>? {
+        val state = mutableState.value
+        val address = state.xiaomiDeviceAddress?.takeIf(String::isNotBlank) ?: return null
+        return address to (state.xiaomiDeviceName?.takeIf(String::isNotBlank) ?: "小米手环")
+    }
+
+    fun saveXiaomiDevice(address: String, name: String) {
+        val context = appContext ?: return
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putString("xiaomiDeviceAddress", address)
+            putString("xiaomiDeviceName", name)
+        }
+        update { it.copy(xiaomiDeviceAddress = address, xiaomiDeviceName = name) }
+    }
+
+    fun clearXiaomiCandidates() {
+        update { it.copy(xiaomiCandidates = emptyList()) }
+    }
+
+    fun addXiaomiCandidate(candidate: XiaomiBandCandidate) {
+        if (!isXiaomiMode()) return
+        update { state ->
+            val candidates = (state.xiaomiCandidates.filterNot { it.address == candidate.address } + candidate)
+                .sortedByDescending(XiaomiBandCandidate::signalStrength)
+            state.copy(xiaomiCandidates = candidates)
+        }
+    }
+
+    fun updateXiaomiConnection(
+        status: String,
+        connected: Boolean,
+        scanning: Boolean,
+        address: String? = null,
+        name: String? = null,
+    ) {
+        if (!isXiaomiMode() && status != "已切回 Galaxy Watch") return
+        update {
+            it.copy(
+                xiaomiStatus = status,
+                xiaomiConnected = connected,
+                xiaomiScanning = scanning,
+                watchConnected = connected,
+                xiaomiDeviceAddress = address ?: it.xiaomiDeviceAddress,
+                xiaomiDeviceName = name ?: it.xiaomiDeviceName,
+                lastError = "--",
+            )
+        }
+    }
+
+    fun reportXiaomiError(message: String) {
+        update {
+            it.copy(
+                xiaomiStatus = message,
+                xiaomiScanning = false,
+                lastError = message,
             )
         }
     }
@@ -136,6 +242,7 @@ object PhoneRelayRepository {
 
     @Synchronized
     fun handleWatchSample(sourceNodeId: String, bytes: ByteArray) {
+        if (mutableState.value.heartRateSource != HeartRateSource.GALAXY_WATCH) return
         val context = appContext ?: return
         val phoneReceiveMillis = System.currentTimeMillis()
         val json = try {
@@ -173,6 +280,7 @@ object PhoneRelayRepository {
         } else {
             RelayDiagnosticFields.names.forEach(json::remove)
         }
+        json.put("source", HeartRateSource.GALAXY_WATCH.wireName)
         json.put("phoneForwardIntervalSeconds", effectiveForwardInterval)
         update {
             it.copy(
@@ -211,6 +319,68 @@ object PhoneRelayRepository {
             return
         }
         forward(context, sourceNodeId, json, isRealHeartRate, watchAckRequested)
+    }
+
+    @Synchronized
+    fun handleXiaomiHeartRate(address: String, name: String, bpm: Int) {
+        if (!isXiaomiMode() || bpm !in 1..300) return
+        val context = appContext ?: return
+        val now = System.currentTimeMillis()
+        val sequence = xiaomiSequence.incrementAndGet()
+        val diagnosticMode = mutableState.value.diagnosticMode
+        val json = JSONObject()
+            .put("version", 1)
+            .put("type", "heart_rate")
+            .put("source", HeartRateSource.XIAOMI_BAND_BLE.wireName)
+            .put("sequence", sequence)
+            .put("sampleEpochMillis", now)
+            .put("bpm", bpm)
+            .put("phoneForwardIntervalSeconds", mutableState.value.forwardIntervalSeconds)
+            .put("watchAckRequested", false)
+        if (diagnosticMode) {
+            json
+                .put("diagnosticMode", true)
+                .put("sessionId", "xiaomi-ble")
+                .put("rawBpm", bpm.toDouble())
+                .put("accuracy", "Bluetooth SIG Heart Rate Profile")
+                .put("sourceDeviceName", name)
+                .put("sourceDeviceAddress", address)
+                .put("phoneReceivedEpochMillis", now)
+                .put("phoneLocalIp", findLocalIpv4())
+                .put("phoneNetworkType", networkType(context))
+                .put("phoneVpnActive", isVpnActive(context))
+        }
+        update {
+            it.copy(
+                watchNodeId = address,
+                watchConnected = true,
+                currentBpm = bpm,
+                receivedCount = it.receivedCount + 1,
+                lastSequence = sequence,
+                lastSampleMillis = now,
+                lastPhoneReceiveMillis = now,
+                watchRelayMode = if (diagnosticMode) "Xiaomi BLE Share HR" else null,
+                watchRawBpm = if (diagnosticMode) bpm.toDouble() else null,
+                watchAccuracy = if (diagnosticMode) "Bluetooth SIG Heart Rate Profile" else null,
+                xiaomiStatus = "正在接收实时心率",
+                xiaomiConnected = true,
+                xiaomiScanning = false,
+                xiaomiDeviceAddress = address,
+                xiaomiDeviceName = name,
+                lastError = "--",
+            )
+        }
+        if (!shouldForwardHeartRate()) {
+            update { it.copy(throttledCount = it.throttledCount + 1) }
+            return
+        }
+        forward(
+            context = context,
+            watchNodeId = null,
+            json = json,
+            isHeartRate = true,
+            watchAckRequested = false,
+        )
     }
 
     fun runDiagnostics() {
@@ -259,6 +429,7 @@ object PhoneRelayRepository {
             .put("phoneNetworkType", state.networkType)
             .put("phoneVpnActive", state.vpnActive)
             .put("diagnosticMode", true)
+            .put("source", state.heartRateSource.wireName)
         forward(
             context,
             null,
@@ -285,7 +456,9 @@ object PhoneRelayRepository {
                 watchRelayMode = if (enabled) it.watchRelayMode else null,
             )
         }
-        val nodeId = mutableState.value.watchNodeId.takeUnless { it == "--" }
+        val nodeId = mutableState.value.watchNodeId
+            .takeIf { mutableState.value.heartRateSource == HeartRateSource.GALAXY_WATCH }
+            ?.takeUnless { it == "--" }
         if (nodeId != null) syncDiagnosticModeToWatch(context, nodeId, enabled)
     }
 
@@ -409,8 +582,12 @@ object PhoneRelayRepository {
                     if (requestedMode != mutableState.value.diagnosticMode) {
                         setDiagnosticMode(requestedMode)
                     }
-                    val nodeId = request.watchNodeId
-                        ?: mutableState.value.watchNodeId.takeUnless { it == "--" }
+                    val nodeId = if (mutableState.value.heartRateSource == HeartRateSource.GALAXY_WATCH) {
+                        request.watchNodeId
+                            ?: mutableState.value.watchNodeId.takeUnless { it == "--" }
+                    } else {
+                        null
+                    }
                     if (nodeId != null) syncDiagnosticModeToWatch(context, nodeId, requestedMode)
                 }
                 if (mutableState.value.diagnosticMode || request.diagnostic) {

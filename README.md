@@ -6,16 +6,21 @@
 
 版本变化与本轮复核修正见 [CHANGELOG.md](CHANGELOG.md)。
 
-Samsung Galaxy Watch6 心率采集与 VRChat OSC 中转项目。包含四个可独立构建的组件：
+Galaxy Watch6 / 小米手环心率采集与 VRChat OSC 中转项目。包含三个可独立构建的组件：
 
 - `app`：Wear OS 应用。`diagnostic` 是保留完整测试与报告功能的测试版，`production` 是只保留日常启停和状态显示的正式版；两版都由健康类型 `ForegroundService` 持有 `ExerciseClient`。
-- `mobile`：Android 手机伴侣应用，使用 Material 3，接收手表消息并通过局域网 UDP 转发到电脑。
+- `mobile`：Android 手机伴侣应用，使用 Material 3；可在 Galaxy Watch Data Layer 与小米手环标准 BLE 心率广播之间切换，再通过局域网 UDP 转发到电脑。
 - `pc-python`：首选 Windows 接收器，使用 Python 编写，可打包为不依赖 Python 环境的单个 EXE，并带 pytest 测试。
-- `pc-bridge`：原有 C# WinForms 接收器，完整保留为回退版本。
 
-当前仓库已实现的中继链路是 `Watch (Wear OS Data Layer) → Phone (UDP / LAN) → Windows → VRChat OSC`。手表和手机使用相同包名及签名，数据层只选择 `isNearby` 手机节点。链路测试包不会作为真实心率发送给 VRChat。
+当前仓库保留三条链路，其中 Windows Python 端会让“手机中转”和“电脑 BLE 直连”互斥，避免同一时间两路真实心率争用 OSC：
 
-最终目标链路是 `Watch (BLE Heart Rate Service) → Windows → VRChat OSC`；Watch 作为 BLE GATT 外设、Windows BLE 接收和目标 OSC 参数尚未实现。Unity 模型、Animator 与 Avatar 数字显示由项目使用者自行维护，不属于本仓库当前实现范围。
+- `Galaxy Watch (Wear OS Data Layer) → Phone → Windows → VRChat OSC`
+- `Xiaomi Band (BLE Heart Rate Service) → Phone → Windows → VRChat OSC`
+- `Xiaomi Band (BLE Heart Rate Service) → Windows → VRChat OSC`（实验性，无需手机）
+
+Galaxy 手表和手机使用相同包名及签名，数据层只选择 `isNearby` 手机节点。小米模式使用手环系统自带“共享心率”，只在该模式开启按需 BLE 前台服务。链路测试包不会作为真实心率发送给 VRChat。小米实现原理、公开 API 边界、操作和真机验收项见 [docs/XIAOMI_BAND.md](docs/XIAOMI_BAND.md)。
+
+小米手环电脑直连已由 Python Windows 端实现：Windows 使用系统蓝牙扫描标准心率服务 `0x180D`，订阅 `0x2A37`，并复用原有 OSC、曲线、CSV、统计和超时状态机。原手机中转链路继续保留且仍为默认；旧 C# Windows 接收器已在 `v1.1.0` 开发周期移除，避免维护两套桌面实现。Unity 模型、Animator 与 Avatar 数字显示由项目使用者自行维护，不属于本仓库当前实现范围。
 
 ## 在 Android Studio 中打开
 
@@ -75,11 +80,13 @@ $adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
 
 ## 三端联通测试
 
-1. 在电脑双击首选产物 `dist\windows-python\VrcRealtimeHeartbeat-Python.exe`，默认监听 UDP `9123`，OSC 目标为 `127.0.0.1:9000`。旧 C# 版仍位于 `dist\windows\VrcRealtimeHeartbeat.exe`。
+1. 在电脑双击 `dist\windows-python\VrcRealtimeHeartbeat-Python.exe`，默认监听 UDP `9123`，OSC 目标为 `127.0.0.1:9000`。
 2. 在电脑点击“显示配对二维码”，手机点击“扫码配对电脑”；也可以手动填写电脑局域网 IPv4 和端口 `9123`。
 3. 手机点击“一键诊断”，确认手机显示电脑已回执，电脑运行记录出现 `phone_diagnostic`。
 4. 手表点击 `Send phone / PC link test`。测试包必须经过三端并返回回执，但不会进入 VRChat。
 5. 真正测量前先在手表正式版选择发送频率，再启动“后台连续”：`5 秒省电`（默认）与 `10 秒超省电`都使用 Health Services 批量交付，不持有 WakeLock、不注册直接传感器；`1 秒实时`使用约 1 Hz 的直接心率传感器和有界滚动 WakeLock，息屏延迟更低但明显更耗电。省电档在 BPM 不变时自动把重复保活放宽到双倍间隔。手机到电脑可独立选择 `1/2/5/10/30 秒`并暂停/恢复。要得到真正约 1 秒一份的新 BPM，手表和手机两端都要选择 1 秒；手机档位快于手表档位时只能等待下一份手表数据。
+
+小米手环模式不安装新的 RPK：先在手环进入 `设置 → 共享心率 → 开启`。需要手机中转时，在手机点击“切换至小米手环”；需要无手机直连时，在 Python 电脑端的“心率来源”选择“电脑直连小米手环（实验）”，启动后扫描并连接手环。两种接收方式不要同时连接；切回“手机中转”后电脑会停止 BLE。代码、Windows BLE 扫描冒烟和自动化测试已通过，但尚缺 Xiaomi Smart Band 10 真机通知/重连/续航验收，不能把它视为已完成的正式设备认证。
 
 功耗根因、官方依据和下一轮 A/B 测试指标见 [docs/POWER_OPTIMIZATION.md](docs/POWER_OPTIMIZATION.md)。2026-07-21 的 5 秒省电档 20 分钟正常佩戴测试取得 1194 个真实样本，最大采样间隔 2005 ms、息屏交付 P95 4056 ms、最长无 callback 6016 ms，且无 WakeLock、服务重启、错误或崩溃。2026-07-23 的第二轮代码优化又移除了正式版逐批日志 flush、逐批 SharedPreferences 写入、每 30 秒节点重查和逐包 ACK，并为手机离线发现增加退避；这些改动仍需 60 分钟真机 A/B 验证。
 
@@ -94,15 +101,13 @@ Python 电脑端 v1.1.0 还提供 Avatar 参数测试、启动时 GitHub 正式�
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-python\Build-Exe.ps1 -Python .\pc-python\.venv\Scripts\python.exe
 ```
 
-旧 C# 回退版仍可使用 `pc-bridge\Build-Exe.ps1` 单独构建。
-
 ## GitHub 云端构建
 
 仓库中的 `Build distributables` GitHub Actions 工作流会在 Pull Request、`main` 更新和手动触发时运行：
 
 - 用 Gradle Wrapper 测试并构建 Wear OS 测试版与正式版两个 APK；
 - 用同一次任务构建 Android `phone-debug.apk`，确保两端 Debug 签名匹配；
-- 在 Windows Runner 上分别测试和打包首选 Python EXE 与旧 C# 回退 EXE；
+- 在 Windows Runner 上测试和打包 Python 单文件 EXE；
 - 为下载文件生成 `SHA256SUMS.txt`；
 - 将 Android 和 Windows 输出保存为14天的 Workflow Artifacts。
 

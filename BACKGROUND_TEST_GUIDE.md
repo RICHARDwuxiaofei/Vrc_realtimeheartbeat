@@ -71,7 +71,7 @@ $watch = 'WATCH_IP:ADB_PORT'
 也可以在测试结束后由电脑自动选择最新报告、导出三个原始文件并独立复算连续性：
 
 ```powershell
-.\pc-bridge\WatchTestReport.ps1 -Watch 'WATCH_IP:ADB_PORT'
+.\tools\WatchTestReport.ps1 -Watch 'WATCH_IP:ADB_PORT'
 ```
 
 该工具不经过手机，也不参与实时传输；它只在测试结束后使用 ADB，并额外生成 `.pc-analysis.json` 和 `.pc-analysis.txt` 供交叉核对。

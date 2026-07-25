@@ -14,5 +14,7 @@ internal object RelayDiagnosticFields {
         "phoneLocalIp",
         "phoneNetworkType",
         "phoneVpnActive",
+        "sourceDeviceName",
+        "sourceDeviceAddress",
     )
 }

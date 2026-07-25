@@ -1,10 +1,12 @@
 # 换机继续开发摘要
 
-更新时间：2026-07-25
+更新时间：2026-07-26
+
+> 2026-07-26 新增候选功能：小米手环标准 BLE 心率可选择 Android 手机中转，也可由 Python Windows 端直接订阅。实现、公开接口边界和真机待验项先读 [XIAOMI_BAND.md](XIAOMI_BAND.md)。代码已经过自动化测试和 Windows BLE 扫描冒烟，但尚未用 Xiaomi Smart Band 10 真机验收，不可直接标记为正式发布已验证。
 
 ## 1. 项目目标与当前真实链路
 
-项目用于把 Galaxy Watch6 的真实心率送到 VRChat Avatar。
+项目用于把 Galaxy Watch6 或支持标准 BLE 心率广播的小米手环真实心率送到 VRChat Avatar。
 
 当前已经跑通并正在使用的链路：
 
@@ -17,7 +19,17 @@ Galaxy Watch6
   → VRChat OSC
 ```
 
-最初规划的 `Watch BLE GATT 外设 → Windows 直连` 尚未实现。当前版本仍需要 Android 手机中转，不能把它描述成手表直连电脑 BLE。
+新增、尚待真机验收的候选链路：
+
+```text
+Xiaomi Smart Band 10“共享心率”
+  → BLE Heart Rate Service 0x180D / Measurement 0x2A37
+  ├→ Android 手机按需 ForegroundService → UDP → Windows
+  └→ Python Windows BLE（实验，无需手机）────────────→ Windows
+  → 同一套 VRChat OSC / 超时 / 诊断曲线 / CSV
+```
+
+`Xiaomi Band BLE GATT → Windows` 已在 Python 端实现为实验输入源，不需要 Android 手机；原 Galaxy/小米手机中转完整保留且仍为默认。该结论只适用于小米固件“共享心率”，不代表 Galaxy Watch 自定义 GATT 直连已经实现。
 
 Unity、Avatar 模型、Animator 和数字显示由用户自己维护；本仓库负责到 OSC 参数输出为止。
 
@@ -41,7 +53,6 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 
 - `android-debug-apks`：手表测试版、手表正式版、手机 APK
 - `windows-python-heart-rate-bridge`：首选 Python EXE 与 ZIP
-- `windows-csharp-heart-rate-bridge`：旧 C# 回退 EXE 与 ZIP
 
 工作流文件为 `.github/workflows/build.yml`。当前只在 `main` push、Pull Request 或手动运行时触发；仅推送开发分支后如需云端产物，可在 Actions 手动选择该分支运行，或创建 Pull Request。
 
@@ -62,12 +73,13 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 
 接收手表 Data Layer 消息，再用 UDP 发给电脑。默认电脑端口 `9123`，发送间隔可选 `1/2/5/10/30 秒`，建议日常使用 `5 秒`。手机可以暂停/恢复向电脑发送，但不停止手表采样。
 
+新增的小米模式订阅标准 BLE 心率通知，再复用同一 UDP 协议。来源选择持久化且互斥：首次请求附近设备权限，扫描 20 秒并让用户选择设备；以后从保存的 BLE 地址重连。切回 Galaxy Watch 后必须停止 `XiaomiHeartRateService`。`source` 是向后兼容字段，Python Windows 端会显示来源。设备名和地址只在诊断模式加入扩展字段。
+
 ### Windows 端
 
-- `pc-python/`：当前首选版本，Python + Tkinter，带 pytest，可打包为单文件 EXE。
-- `pc-bridge/`：原 C# WinForms 版本，完整保留用于回退，不要删除。
+- `pc-python/`：当前首选版本，Python + Tkinter，带 pytest，可打包为单文件 EXE；包含手机 UDP 和小米手环 Windows BLE 两个互斥输入引擎。
 
-两版协议相同，但不能同时监听 UDP `9123`。
+桌面端从 `v1.1.0` 起只维护 Python 实现；旧 C# WinForms 和 PowerShell 接收器已删除。电脑 BLE 使用 Bleak/WinRT，扫描 `0x180D`、订阅 `0x2A37`、保存设备并在意外断线 5 秒后重连；只有选择直连来源时才启动蓝牙事件线程。
 
 ## 4. 日常使用方法
 
@@ -81,6 +93,8 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 8. 默认档电脑在 BPM 变化时约每 5 秒收到一份最新值，稳定值约每 10 秒保活；10 秒档对应约 10/20 秒。这不代表手表内部按这个频率采样，Health Services 回调可以包含一批按 `sampleEpochMillis` 排列的真实样本。
 
 停止时优先在手表正式版中点击“停止传输”。不要通过强制停止服务代替正常停止 Exercise 会话。
+
+若使用小米手环电脑直连：手环开启“共享心率”，电脑“心率来源”选择“电脑直连小米手环（实验）”，扫描、选中并连接设备。此时 UDP 不绑定、配对二维码停用，但 Avatar 测试、OSC、曲线和 CSV 仍可用。切回手机来源时 BLE 会停止。
 
 ## 5. VRChat OSC 参数
 
@@ -165,7 +179,6 @@ PyInstaller >= 6, < 7
 
 可选：
 
-- Visual Studio 或 Visual Studio Build Tools：仅在需要重新编译旧 C# 回退版时使用。
 - VRChat：做 OSC 实收测试时需要。
 - Unity 不属于本仓库工作范围。
 
@@ -228,12 +241,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -Python .\pc-python\.venv\Scripts\python.exe
 ```
 
-旧 C# 回退版：
+手表报告工具：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-bridge\HeartRateBridge.ps1 -SelfTest
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-bridge\WatchTestReport.ps1 -SelfTest
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-bridge\Build-Exe.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\WatchTestReport.ps1 -SelfTest
 ```
 
 发布分支的最低门禁：
@@ -241,16 +252,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-bridge\Build-Exe.ps
 1. Python pytest、模块自检、打包 EXE 自检全部通过。
 2. 手表 diagnostic/production 与手机单元测试全部通过。
 3. 三个 Android 变体 Lint、assemble 全部通过。
-4. C# 回退桥和报告脚本自检通过。
+4. 手表报告脚本自检通过。
 5. `git diff --check` 无空白错误，工作区只包含本次预期改动。
 
-2026-07-25 候选分支复核结果：
+2026-07-26 候选分支最新本地复核结果：
 
-- Python：52 项 pytest 全部通过；源码入口自检、Tk 诊断模式/滑轨冒烟、PyInstaller 单文件 EXE 构建与打包后 `--self-test` 通过。
-- Android：手表 diagnostic/production 与手机共执行 51 项单元测试，0 失败、0 error、0 skip。
+- Python：69 项 pytest、源码入口自检、手机中转 → 电脑直连 Tk UI 切换冒烟通过。
+- Python EXE：删除 C# 并迁移图标后重新构建，打包后 `--self-test` 和 `--ble-scan-self-test` 均通过；最终 SHA-256 为 `29fcb0dc9559cc46ad183bc1c8b9a862448d86c0dc687f42ace81526c4f0b6e4`。
+- Android：手表 diagnostic/production 与手机共执行 56 项单元测试，0 失败、0 error、0 skip。
 - Android Lint：三个变体均为 0 error；剩余 warning 只有“依赖存在更新版本”的提示，候选分支没有为了追新而变更运行时依赖。
-- 构建：两个 Watch APK、Phone APK、Python EXE、C# 回退 EXE 均成功；三套 APK 元数据均为 `versionName=1.1.0`、`versionCode=2`。
-- 回退工具：`HeartRateBridge.ps1 -SelfTest` 与 `WatchTestReport.ps1 -SelfTest` 通过。
+- 构建：两个 Watch APK、Phone APK、Python EXE 均成功；三套 APK 元数据均为 `versionName=1.1.0`、`versionCode=2`。
+- 报告工具：迁移后的 `tools/WatchTestReport.ps1 -SelfTest` 通过。
 
 自动化通过不等于 Galaxy Watch、手机、VRChat 的真机实收已经完成。命令行出现的 SDK XML 3/4 版本提示来自本机 Android Studio 与 command-line tools 版本差异，本轮未影响测试、Lint 或构建；换机时应让两者保持同一 Android Studio 发布周期。
 
@@ -261,7 +273,6 @@ app/build/outputs/apk/diagnostic/debug/app-diagnostic-debug.apk
 app/build/outputs/apk/production/debug/app-production-debug.apk
 mobile/build/outputs/apk/debug/mobile-debug.apk
 dist/windows-python/VrcRealtimeHeartbeat-Python.exe
-dist/windows/VrcRealtimeHeartbeat.exe
 ```
 
 `dist/`、APK、测试原始输出和设备报告被 `.gitignore` 排除，不会随源码分支上传。换机时应从 GitHub Actions Artifacts 下载，或在新电脑重新构建。
@@ -297,6 +308,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 - 移除 Watch/Phone 重复 Data Layer runtime listener。
 - 旧正式版 Watch APK 已在 SM-R960 真机验证 5 秒省电链路；新增的 1 秒/5 秒选择尚未安装到设备验证。
 - Python Windows GUI、UDP ACK、OSC、超时、三位数拆分和 HRPulse。
+- Python Windows 新增小米手环直连输入：只在用户选择时启动 WinRT/Bleak，手机 UDP 与电脑 BLE 互斥；0x180D 扫描、0x2A37 订阅、设备记忆、5 秒重连和打包后扫描均已实现，仍待小米手环真机通知验证。
 - v1.1.0 Python GUI 已加入默认关闭的按需诊断模式、1–10 分钟可调曲线（默认 1 分钟）、最低/最高/平均 BPM、Avatar 参数测试、边写边读的内部诊断 CSV、仅手动用户导出、GitHub 更新检查、配对二维码和电脑诊断；手机端已加入扫码配对和完整诊断模式。电脑通过 UDP ACK 控制手机，手机只在模式变化时通知手表，普通包不携带原始 BPM、精度、电量、屏幕状态等扩展字段。
 - 2026-07-25 代码复核修正了长时 CSV 全量扫描、诊断请求可能被心率覆盖、普通模式遗留 `sessionId`、UDP ACK 来源未绑定和正式版重复警告写日志的问题，并增加对应回归测试。
 
@@ -305,7 +317,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 1. 分别对 1 秒实时档和 5 秒省电档做 5–10 分钟息屏冒烟测试，确认手表、手机、电脑显示的频率一致。
 2. 两个档位分别做正常佩戴至少 60 分钟测试，记录开始/结束电量、发送间隔、手机/电脑断档。
 3. 在 VRChat 中实收 `HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`、`HRValid`、`HRPulse`。
-4. 决定是否仍要继续最初的 Watch BLE GATT 直连电脑阶段；这部分尚未开始。
+4. 用 Xiaomi Smart Band 10 真机完成 Windows 直连的 0x2A37 通知、断线重连和 60 分钟功耗；Galaxy Watch 自定义 GATT 直连仍是独立的未开始课题。
 5. 正式发布前配置稳定的 Android release signing；当前 APK 是 debug 签名。
 
 ## 14. 功耗设计原则
@@ -322,7 +334,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 - 不要回到 MeasureClient 作为最终方案；它息屏后停止供数。
 - 不要重新证明 ExerciseClient 能否息屏采样；这已经真机验证。
 - 不要把 1 秒实时档改成无界 WakeLock；它必须保持用户显式选择、有界续租并覆盖所有释放路径。
-- 不要删除测试版、报告记录器、Python 版或旧 C# 回退版。
+- 不要删除测试版、报告记录器、Python Windows 版或 `tools/WatchTestReport.ps1`。
 - 不要用 callback 接收时间代替 `sampleEpochMillis` 判断真实采样连续性。
 - 不要把链路测试包或固定 72 BPM 当成真实心率。
 - 不要假设 ADB 是运行链路的一部分；ADB 断线不应影响正式采集和传输。

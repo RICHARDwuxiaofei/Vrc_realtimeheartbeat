@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 from .app import main
+from .ble_direct import ble_dependency_available, ble_scan_self_test, parse_heart_rate_measurement
 from .osc import encode_message
 from .pairing import build_pairing_uri
 from .protocol import build_ack, parse_packet
@@ -23,10 +24,14 @@ def self_test() -> None:
     import qrcode
 
     assert qrcode.make(pairing_uri).size[0] > 0
+    assert ble_dependency_available()
+    assert parse_heart_rate_measurement(b"\x00\x48") == 72
 
 
 if __name__ == "__main__":
-    if "--self-test" in sys.argv:
+    if "--ble-scan-self-test" in sys.argv:
+        ble_scan_self_test()
+    elif "--self-test" in sys.argv:
         self_test()
     else:
         main()

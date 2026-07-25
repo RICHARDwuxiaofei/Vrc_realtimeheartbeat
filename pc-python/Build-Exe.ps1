@@ -17,7 +17,7 @@ if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $repoRoot 'dist\windows-python'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$icon = Join-Path $repoRoot 'pc-bridge\assets\heart-relay.ico'
+$icon = Join-Path $bridgeRoot 'assets\heart-relay.ico'
 $entry = Join-Path $bridgeRoot 'run_app.py'
 $work = Join-Path $bridgeRoot 'build\pyinstaller'
 $spec = Join-Path $bridgeRoot 'build\spec'

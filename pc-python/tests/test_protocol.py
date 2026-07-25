@@ -34,6 +34,11 @@ def test_parse_real_packet():
     assert parsed.forward_interval_seconds == 5
 
 
+def test_source_field_is_preserved_for_pc_diagnostics():
+    parsed = parse_packet(packet(source="xiaomi_band_ble"))
+    assert parsed.payload["source"] == "xiaomi_band_ble"
+
+
 @pytest.mark.parametrize("interval, expected", [(-5, 1), (0, 1), (10, 10), (99, 30), ("5", 5)])
 def test_forward_interval_is_safe(interval, expected):
     assert parse_packet(packet(phoneForwardIntervalSeconds=interval)).forward_interval_seconds == expected

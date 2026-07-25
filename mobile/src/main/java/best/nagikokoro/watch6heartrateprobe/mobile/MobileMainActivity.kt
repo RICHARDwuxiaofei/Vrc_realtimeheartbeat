@@ -1,8 +1,14 @@
 package best.nagikokoro.watch6heartrateprobe.mobile
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -48,11 +54,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.ContextCompat
 import best.nagikokoro.watch6heartrateprobe.R
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -80,6 +88,9 @@ class MobileMainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         PhoneRelayRepository.refreshNetwork()
+        if (PhoneRelayRepository.isXiaomiMode() && hasXiaomiBlePermissions(this)) {
+            startXiaomiService(this, XiaomiHeartRateService.ACTION_START)
+        }
     }
 }
 
@@ -105,10 +116,21 @@ private fun RelayApp() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RelayScreen() {
+    val context = LocalContext.current
     val state by PhoneRelayRepository.state.collectAsStateWithLifecycle()
     var ip by remember(state.targetIp) { mutableStateOf(state.targetIp) }
     var port by remember(state.targetPort) { mutableStateOf(state.targetPort.toString()) }
     var pairingMessage by remember { mutableStateOf<String?>(null) }
+    val xiaomiPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        if (hasXiaomiBlePermissions(context)) {
+            PhoneRelayRepository.setHeartRateSource(HeartRateSource.XIAOMI_BAND_BLE)
+            startXiaomiService(context, XiaomiHeartRateService.ACTION_START)
+        } else {
+            PhoneRelayRepository.reportXiaomiError("附近设备权限被拒绝，无法读取小米手环心率")
+        }
+    }
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         val contents = result.contents
         if (contents != null) {
@@ -163,16 +185,53 @@ private fun RelayScreen() {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             HeartRateHero(state, now, watchAlive)
-            DiagnosticModeCard(state.diagnosticMode)
+            HeartRateSourceCard(
+                state = state,
+                onSwitchToXiaomi = {
+                    if (hasXiaomiBlePermissions(context)) {
+                        PhoneRelayRepository.setHeartRateSource(HeartRateSource.XIAOMI_BAND_BLE)
+                        startXiaomiService(context, XiaomiHeartRateService.ACTION_START)
+                    } else {
+                        xiaomiPermissionLauncher.launch(xiaomiRuntimePermissions())
+                    }
+                },
+                onSwitchToGalaxy = {
+                    context.stopService(Intent(context, XiaomiHeartRateService::class.java))
+                    PhoneRelayRepository.setHeartRateSource(HeartRateSource.GALAXY_WATCH)
+                },
+                onScan = {
+                    startXiaomiService(context, XiaomiHeartRateService.ACTION_SCAN)
+                },
+                onConnect = { candidate ->
+                    startXiaomiService(
+                        context,
+                        XiaomiHeartRateService.ACTION_CONNECT,
+                        candidate,
+                    )
+                },
+            )
+            DiagnosticModeCard(state.diagnosticMode, state.heartRateSource)
 
             SectionTitle("链路状态")
             StatusCard(
                 "01",
-                "Galaxy Watch6",
-                if (watchAlive) {
-                    if (state.diagnosticMode) "蓝牙中转正常 · 序号 ${state.lastSequence ?: "--"}" else "蓝牙中转正常"
+                if (state.heartRateSource == HeartRateSource.XIAOMI_BAND_BLE) {
+                    state.xiaomiDeviceName ?: "小米手环"
                 } else {
-                    "等待手表心率"
+                    "Galaxy Watch6"
+                },
+                if (watchAlive) {
+                    if (state.diagnosticMode) {
+                        "${sourceLabel(state.heartRateSource)}正常 · 序号 ${state.lastSequence ?: "--"}"
+                    } else {
+                        "${sourceLabel(state.heartRateSource)}正常"
+                    }
+                } else {
+                    if (state.heartRateSource == HeartRateSource.XIAOMI_BAND_BLE) {
+                        state.xiaomiStatus
+                    } else {
+                        "等待手表心率"
+                    }
                 },
                 watchAlive,
             )
@@ -198,8 +257,10 @@ private fun RelayScreen() {
                 enabled = state.forwardingEnabled,
                 intervalSeconds = state.forwardIntervalSeconds,
                 watchIntervalSeconds = state.watchRelayIntervalSeconds,
+                source = state.heartRateSource,
             )
             if (watchIntervalSeconds != null &&
+                state.heartRateSource == HeartRateSource.GALAXY_WATCH &&
                 state.forwardIntervalSeconds < watchIntervalSeconds
             ) {
                 AlertCard(
@@ -290,6 +351,11 @@ private fun RelayScreen() {
                             state.watchScreenInteractive?.let { if (it) "亮屏" else "息屏" } ?: "--",
                         )
                         Metric("手表发送模式", state.watchRelayMode ?: "--")
+                        Metric("心率来源", sourceLabel(state.heartRateSource))
+                        if (state.heartRateSource == HeartRateSource.XIAOMI_BAND_BLE) {
+                            Metric("BLE 设备", state.xiaomiDeviceName ?: "--")
+                            Metric("BLE 地址", state.xiaomiDeviceAddress ?: "--")
+                        }
                         Metric("手表发送间隔", state.watchRelayIntervalSeconds?.let { "${it}s" } ?: "--")
                         Metric("手机网络", state.networkType + if (state.vpnActive) " · VPN" else "")
                         Metric("手机局域网 IP", state.localIp)
@@ -305,7 +371,11 @@ private fun RelayScreen() {
                 AlertCard("检测到 VPN。电脑回执失败时，请允许局域网访问或暂时关闭 VPN。", Color(0x33FFB74D), Color(0xFFFFC56D))
             }
             Text(
-                "手表决定新心率多久到达手机；这里的发送间隔只控制手机到电脑。暂停后手机仍继续接收手表数据。",
+                if (state.heartRateSource == HeartRateSource.XIAOMI_BAND_BLE) {
+                    "小米模式只在启用时运行 BLE 前台服务；这里的发送间隔只控制手机到电脑。切回 Galaxy Watch 后会立即停止 BLE 扫描和连接。"
+                } else {
+                    "手表决定新心率多久到达手机；这里的发送间隔只控制手机到电脑。暂停后手机仍继续接收手表数据。"
+                },
                 color = Muted,
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
@@ -316,7 +386,7 @@ private fun RelayScreen() {
 }
 
 @Composable
-private fun DiagnosticModeCard(enabled: Boolean) {
+private fun DiagnosticModeCard(enabled: Boolean, source: HeartRateSource) {
     Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardElevated)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
@@ -327,7 +397,11 @@ private fun DiagnosticModeCard(enabled: Boolean) {
                 Text("诊断模式", fontWeight = FontWeight.Bold)
                 Text(
                     if (enabled) {
-                        "采集手表扩展字段并显示完整链路数据；电脑开关会同步"
+                        if (source == HeartRateSource.XIAOMI_BAND_BLE) {
+                            "采集 BLE 设备与完整链路字段；电脑开关会同步到手机"
+                        } else {
+                            "采集手表扩展字段并显示完整链路数据；电脑开关会同步"
+                        }
                     } else {
                         "普通模式：只保留心率中转所需数据；电脑端为主开关"
                     },
@@ -362,9 +436,85 @@ private fun HeartRateHero(state: PhoneRelayState, now: Long, watchAlive: Boolean
                 Text(state.currentBpm?.toString() ?: "--", fontSize = 66.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Text("BPM", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AccentCoral)
                 Text(
-                    state.lastSampleMillis?.let { "采样于 ${formatTime(it)} · ${ageText(now, it)}" } ?: "等待 Galaxy Watch6 数据",
+                    state.lastSampleMillis?.let { "采样于 ${formatTime(it)} · ${ageText(now, it)}" }
+                        ?: "等待${sourceLabel(state.heartRateSource)}数据",
                     color = Muted,
                     fontSize = 13.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeartRateSourceCard(
+    state: PhoneRelayState,
+    onSwitchToXiaomi: () -> Unit,
+    onSwitchToGalaxy: () -> Unit,
+    onScan: () -> Unit,
+    onConnect: (XiaomiBandCandidate) -> Unit,
+) {
+    val xiaomiMode = state.heartRateSource == HeartRateSource.XIAOMI_BAND_BLE
+    Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardElevated)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("心率来源", fontWeight = FontWeight.Bold)
+                    Text(sourceLabel(state.heartRateSource), color = Muted, fontSize = 12.sp)
+                }
+                Box(
+                    Modifier.size(9.dp).clip(CircleShape)
+                        .background(if (state.watchConnected) Success else Muted),
+                )
+            }
+            if (!xiaomiMode) {
+                Button(onClick = onSwitchToXiaomi, modifier = Modifier.fillMaxWidth()) {
+                    Text("切换至小米手环", fontWeight = FontWeight.Bold)
+                }
+                Text(
+                    "支持小米手环 10 等提供标准 BLE 心率广播的设备。切换前请在手环打开：设置 → 共享心率 → 开启。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                )
+            } else {
+                Text(state.xiaomiStatus, color = if (state.xiaomiConnected) Success else Muted, fontSize = 12.sp)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onScan,
+                        enabled = !state.xiaomiScanning,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (state.xiaomiScanning) "扫描中…" else "重新扫描")
+                    }
+                    OutlinedButton(onClick = onSwitchToGalaxy, modifier = Modifier.weight(1f)) {
+                        Text("切回 Galaxy Watch")
+                    }
+                }
+                state.xiaomiCandidates.forEach { candidate ->
+                    OutlinedButton(
+                        onClick = { onConnect(candidate) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(candidate.name, fontWeight = FontWeight.Bold)
+                            Text(
+                                "${candidate.address} · ${candidate.signalStrength} dBm",
+                                color = Muted,
+                                fontSize = 11.sp,
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "只扫描标准心率服务，不读取小米账号或历史健康数据。首次找到设备后点一下设备；以后会记住并自动重连。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
                 )
             }
         }
@@ -376,6 +526,7 @@ private fun TransferControlCard(
     enabled: Boolean,
     intervalSeconds: Int,
     watchIntervalSeconds: Int?,
+    source: HeartRateSource,
 ) {
     Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardElevated)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -391,8 +542,15 @@ private fun TransferControlCard(
                 Text(if (enabled) "运行中" else "已暂停", color = if (enabled) Success else AccentCoral, fontWeight = FontWeight.Bold)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("手表 → 手机", color = Muted, fontSize = 12.sp)
-                Text(watchIntervalSeconds?.let { "约 ${it} 秒" } ?: "等待手表上报", fontSize = 12.sp)
+                Text("${sourceLabel(source)} → 手机", color = Muted, fontSize = 12.sp)
+                Text(
+                    if (source == HeartRateSource.XIAOMI_BAND_BLE) {
+                        "由 BLE 广播决定"
+                    } else {
+                        watchIntervalSeconds?.let { "约 ${it} 秒" } ?: "等待手表上报"
+                    },
+                    fontSize = 12.sp,
+                )
             }
             Text("手机 → 电脑发送间隔", color = Muted, fontSize = 12.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -463,3 +621,41 @@ private fun formatTime(millis: Long): String =
     SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(millis))
 
 private fun ageText(now: Long, millis: Long): String = "${((now - millis).coerceAtLeast(0) / 1_000)} 秒前"
+
+private fun sourceLabel(source: HeartRateSource): String = when (source) {
+    HeartRateSource.GALAXY_WATCH -> "Galaxy Watch"
+    HeartRateSource.XIAOMI_BAND_BLE -> "小米手环 BLE"
+}
+
+private fun xiaomiBlePermissions(): Array<String> =
+    if (Build.VERSION.SDK_INT >= 31) {
+        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+    } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+private fun xiaomiRuntimePermissions(): Array<String> =
+    if (Build.VERSION.SDK_INT >= 33) {
+        xiaomiBlePermissions() + Manifest.permission.POST_NOTIFICATIONS
+    } else {
+        xiaomiBlePermissions()
+    }
+
+private fun hasXiaomiBlePermissions(context: Context): Boolean =
+    xiaomiBlePermissions().all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+private fun startXiaomiService(
+    context: Context,
+    action: String,
+    candidate: XiaomiBandCandidate? = null,
+) {
+    val intent = Intent(context, XiaomiHeartRateService::class.java)
+        .setAction(action)
+    candidate?.let {
+        intent.putExtra(XiaomiHeartRateService.EXTRA_ADDRESS, it.address)
+        intent.putExtra(XiaomiHeartRateService.EXTRA_NAME, it.name)
+    }
+    ContextCompat.startForegroundService(context, intent)
+}
