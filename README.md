@@ -1,122 +1,117 @@
-# Vrc_realtimeheartbeat
+# VRChat 实时心率桥
 
 [![Build distributables](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/actions/workflows/build.yml/badge.svg)](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/actions/workflows/build.yml)
 
-换电脑继续开发时，先阅读 [docs/NEW_PC_HANDOFF.md](docs/NEW_PC_HANDOFF.md)。它包含当前链路、三端用法、环境安装、构建测试、GitHub 产物位置和后续任务。
+把 Galaxy Watch 或小米手环的实时心率发送到 Windows，再通过 OSC 提供给 VRChat Avatar。
 
-版本变化与本轮复核修正见 [CHANGELOG.md](CHANGELOG.md)。
+支持三种链路：
 
-Galaxy Watch6 / 小米手环心率采集与 VRChat OSC 中转项目。包含三个可独立构建的组件：
+- Galaxy Watch → Android 手机 → Windows → VRChat
+- 小米手环 → Android 手机 → Windows → VRChat
+- 小米手环 → Windows → VRChat（实验功能）
 
-- `app`：Wear OS 应用。`diagnostic` 是保留完整测试与报告功能的测试版，`production` 是只保留日常启停和状态显示的正式版；两版都由健康类型 `ForegroundService` 持有 `ExerciseClient`。
-- `mobile`：Android 手机伴侣应用，使用 Material 3；可在 Galaxy Watch Data Layer 与小米手环标准 BLE 心率广播之间切换，再通过局域网 UDP 转发到电脑。
-- `pc-python`：首选 Windows 接收器，使用 Python 编写，可打包为不依赖 Python 环境的单个 EXE，并带 pytest 测试。
+## 下载
 
-当前仓库保留三条链路，其中 Windows Python 端会让“手机中转”和“电脑 BLE 直连”互斥，避免同一时间两路真实心率争用 OSC：
+请从 [GitHub Releases](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/releases/latest) 下载最新版。
 
-- `Galaxy Watch (Wear OS Data Layer) → Phone → Windows → VRChat OSC`
-- `Xiaomi Band (BLE Heart Rate Service) → Phone → Windows → VRChat OSC`
-- `Xiaomi Band (BLE Heart Rate Service) → Windows → VRChat OSC`（实验性，无需手机）
+| 文件 | 安装位置 | 用途 |
+| --- | --- | --- |
+| `VrcRealtimeHeartbeat-Python.exe` | Windows | 接收心率并发送 VRChat OSC |
+| `Vrc_realtimeheartbeat-phone-debug.apk` | Android 手机 | 在手表/手环与电脑之间中转 |
+| `Vrc_realtimeheartbeat-watch-production.apk` | Galaxy Watch | 日常使用的正式功能版，推荐安装 |
+| `Vrc_realtimeheartbeat-watch-diagnostic.apk` | Galaxy Watch | 排错与完整链路测试专用 |
+| `SHA256SUMS.txt` | 任意 | 校验下载文件是否完整 |
 
-Galaxy 手表和手机使用相同包名及签名，数据层只选择 `isNearby` 手机节点。小米模式使用手环系统自带“共享心率”，只在该模式开启按需 BLE 前台服务。链路测试包不会作为真实心率发送给 VRChat。小米实现原理、公开 API 边界、操作和真机验收项见 [docs/XIAOMI_BAND.md](docs/XIAOMI_BAND.md)。
+Windows ZIP 包包含 EXE、使用说明和校验文件；只想直接运行时下载单独的 EXE 即可。
 
-小米手环电脑直连已由 Python Windows 端实现：Windows 使用系统蓝牙扫描标准心率服务 `0x180D`，订阅 `0x2A37`，并复用原有 OSC、曲线、CSV、统计和超时状态机。原手机中转链路继续保留且仍为默认；旧 C# Windows 接收器已在 `v1.1.0` 开发周期移除，避免维护两套桌面实现。Unity 模型、Animator 与 Avatar 数字显示由项目使用者自行维护，不属于本仓库当前实现范围。
+## 手表正式版和诊断版
 
-## 在 Android Studio 中打开
+手表端有两个版本，请按用途选择：
 
-1. 用 Android Studio 打开克隆后的项目根目录。
-2. Gradle JDK 选择 Android Studio 默认 JBR。
-3. 等待 Gradle Sync 完成。手表日常使用选择 `app` 的 `productionDebug`，诊断和续航测试选择 `diagnosticDebug`；手机运行配置选择 `mobile`。
+| 版本 | 适合谁 | 包含内容 |
+| --- | --- | --- |
+| 正式功能版 `production` | 日常传输真实心率，推荐 | 简洁界面、真实传感器、发送频率选择、开始/停止和必要状态 |
+| 诊断版 `diagnostic` | 排错、续航测试、开发验证 | 正式版能力，以及探针、息屏/续航测试、详细报告、日志和 60–80 BPM 模拟心率 |
 
-项目固定使用 Gradle Wrapper 8.13；Wrapper 下载包带 SHA-256 校验。当前构建参数为 compileSdk 36.1、targetSdk 36、minSdk 30。
+两版使用相同包名和签名，**不能同时安装**。安装其中一个会覆盖另一个；需要恢复日常使用时，重新安装 `watch-production.apk`。
 
-## 命令行构建
+诊断版的模拟心率不是传感器数据，只用于验证“手表 → 手机 → 电脑 → OSC”整条链路，界面会明确标记为模拟数据。
 
-在 PowerShell 中：
+> 这里的“正式功能版”表示面向日常使用的功能和界面版本。本次三端 APK 使用同一份项目现有 debug 签名，尚未配置商店级 Release 密钥。
+
+## 快速开始
+
+1. 在 Galaxy Watch 安装 `watch-production.apk`，在 Android 手机安装 `phone-debug.apk`。
+2. 在 Windows 运行 `VrcRealtimeHeartbeat-Python.exe`。默认监听 UDP `9123`，OSC 发送到 `127.0.0.1:9000`。
+3. 在电脑点击“显示配对二维码”，用手机扫描；也可以在手机手动填写电脑的局域网 IPv4 地址和端口 `9123`。
+4. 在手表点击“开始传输”。手机显示电脑已回执、电脑显示 BPM 后，链路即已接通。
+5. 在 VRChat 中开启 OSC。
+
+手表与手机通过 Wear OS Data Layer 通信；手机与电脑需要位于可互相访问的局域网。酒店 Wi-Fi 可能禁止设备间通信，即使能上网也不代表 UDP 可以互通。
+
+## 小米手环
+
+手机和 Windows 端均可读取标准 BLE Heart Rate Service（`0x180D/0x2A37`）。
+
+- 手机中转：先在手环开启“共享心率”，再在手机切换到小米手环模式。
+- Windows 直连：在电脑端将“心率来源”改为“电脑直连小米手环（实验）”。
+- 不要让手机和电脑同时连接同一只手环。
+
+Windows 直连已通过自动化和扫描冒烟测试，但仍缺少 Xiaomi Smart Band 10 的长期真机通知、重连和续航验收，因此标记为实验功能。技术细节见 [小米手环说明](docs/XIAOMI_BAND.md)。
+
+## VRChat OSC 参数
+
+电脑端会发送以下参数：
+
+- `/avatar/parameters/HR_Value`：完整 BPM，OSC Int32
+- `/avatar/parameters/HR_Hundreds`、`HR_Tens`、`HR_Ones`：百位、十位、个位
+- `/avatar/parameters/HRValid`：当前数据是否有效
+- `/avatar/parameters/HRPulse`：根据 BPM 生成的节拍
+- `HeartRate`、`HeartRateNormalized`、`HeartRateValid`：兼容旧版参数
+
+## 常见问题
+
+### 手表装完后界面不对
+
+很可能安装了诊断版。重新安装 Release 中的 `Vrc_realtimeheartbeat-watch-production.apk` 即可。
+
+### 手机找不到电脑
+
+- 确认电脑防火墙允许程序访问专用网络。
+- 确认手机和电脑可以互相访问，而不只是连接到同一个 Wi-Fi 名称。
+- 酒店、访客和企业 Wi-Fi 常开启客户端隔离；这时可以改用手机热点或允许局域网互访的路由器。
+- 检查手机填写的是电脑局域网 IPv4，而不是 `127.0.0.1`。
+
+### Windows 第一次启动较慢
+
+单文件 EXE 首次运行需要解压运行环境，安全软件也可能进行扫描。程序支持包含中文或空格的路径，并会在默认临时目录不可用时使用备用目录。
+
+### 无法无线 ADB 连接手表
+
+Wear OS 的无线调试端口会在重新启用或重启后变化。请以手表“无线调试”页面当前显示的 IP 和端口为准；这不影响应用正常传输心率。
+
+## 隐私与安全
+
+- 心率数据默认只在手表、手机和你的局域网电脑之间传输，不上传项目服务器。
+- 普通模式不保留历史心率；只有主动开启电脑诊断记录并手动导出时才会生成 CSV。
+- 本项目不是医疗设备，不应用于诊断、治疗或紧急健康判断。
+
+## 版本与开发文档
+
+- [更新日志](CHANGELOG.md)
+- [功耗优化与实测](docs/POWER_OPTIMIZATION.md)
+- [后台与续航测试指南](BACKGROUND_TEST_GUIDE.md)
+- [新电脑开发交接](docs/NEW_PC_HANDOFF.md)
+
+开发者可用以下命令执行完整 Android 构建与测试：
 
 ```powershell
-$env:JAVA_HOME = 'PATH_TO_JDK'
-$env:ANDROID_SDK_ROOT = 'PATH_TO_ANDROID_SDK'
-.\gradlew.bat :app:assembleDiagnosticDebug :app:assembleProductionDebug :mobile:assembleDebug
+.\gradlew.bat test lint :app:assembleDiagnosticDebug :app:assembleProductionDebug :mobile:assembleDebug
 ```
 
-生成的 APK：
-
-```text
-app\build\outputs\apk\diagnostic\debug\app-diagnostic-debug.apk
-app\build\outputs\apk\production\debug\app-production-debug.apk
-mobile\build\outputs\apk\debug\mobile-debug.apk
-```
-
-## 安装和启动
-
-```powershell
-$adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
-& $adb devices -l
-& $adb -s WATCH_SERIAL install -r 'app\build\outputs\apk\production\debug\app-production-debug.apk'
-& $adb -s PHONE_SERIAL install -r 'mobile\build\outputs\apk\debug\mobile-debug.apk'
-```
-
-正式版只有“开始传输 / 停止传输”和必要状态，固定使用 ExerciseClient；测试版保留 `MeasureClient Probe`、息屏测试、续航测试、原始报告和链路诊断。这里的“正式版”指功能和界面分版，当前本地文件仍是 debug 签名 APK。两版使用相同包名与签名以维持 Wear Data Layer 兼容，因此不能同时安装；安装另一版会覆盖当前版本，APK 文件本身可随时用于回退。API 35 及以下使用身体传感器权限；API 36 及以上使用 `READ_HEART_RATE`，Exercise 模式还会请求 `READ_HEALTH_DATA_IN_BACKGROUND`。Exercise 会话只会在用户点击停止后正常结束，返回表盘、Activity stop 和息屏不会结束会话。
-
-## 查看诊断日志
-
-Logcat：
-
-```powershell
-$adb = Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe'
-& $adb -s WATCH_SERIAL logcat -s HR_PROBE
-```
-
-应用私有滚动日志：
-
-```powershell
-& $adb -s WATCH_SERIAL shell run-as best.nagikokoro.watch6heartrateprobe cat files/logs/hr_probe.log
-```
-
-日志上限约 1 MiB，最多保留 `hr_probe.log`、`hr_probe.log.1`、`hr_probe.log.2`。设备生成的原始报告和本机环境报告默认不纳入版本控制。
-
-后台交付及时性与 10/20/60 分钟续航测试的完整步骤、报告字段和 ADB 导出命令见 [BACKGROUND_TEST_GUIDE.md](BACKGROUND_TEST_GUIDE.md)。每次正式测试会在应用私有目录 `files/tests/` 生成独立的 `.json`、`.txt` 和原始 `.events.jsonl` 文件。
-
-## 三端联通测试
-
-1. 在电脑双击 `dist\windows-python\VrcRealtimeHeartbeat-Python.exe`，默认监听 UDP `9123`，OSC 目标为 `127.0.0.1:9000`。
-2. 在电脑点击“显示配对二维码”，手机点击“扫码配对电脑”；也可以手动填写电脑局域网 IPv4 和端口 `9123`。
-3. 手机点击“一键诊断”，确认手机显示电脑已回执，电脑运行记录出现 `phone_diagnostic`。
-4. 手表点击 `Send phone / PC link test`。测试包必须经过三端并返回回执，但不会进入 VRChat。
-5. 手表无法取得真实心率时，可安装 `diagnosticDebug`，滑到“模拟链路（非传感器）”并启动 60–80 BPM 模拟心率。它会刻意走完整 `heart_rate → OSC` 路径，因此手机和电脑都以黄色警告标出模拟数据；测试结束必须在手表点击停止。正式版 APK 不包含这个入口。
-6. 真正测量前先在手表正式版选择发送频率，再启动“后台连续”：`5 秒省电`（默认）与 `10 秒超省电`都使用 Health Services 批量交付，不持有 WakeLock、不注册直接传感器；`1 秒实时`使用约 1 Hz 的直接心率传感器和有界滚动 WakeLock，息屏延迟更低但明显更耗电。省电档在 BPM 不变时自动把重复保活放宽到双倍间隔。手机到电脑可独立选择 `1/2/5/10/30 秒`并暂停/恢复。要得到真正约 1 秒一份的新 BPM，手表和手机两端都要选择 1 秒；手机档位快于手表档位时只能等待下一份手表数据。
-
-小米手环模式不安装新的 RPK：先在手环进入 `设置 → 共享心率 → 开启`。需要手机中转时，在手机点击“切换至小米手环”；需要无手机直连时，在 Python 电脑端的“心率来源”选择“电脑直连小米手环（实验）”，启动后扫描并连接手环。两种接收方式不要同时连接；切回“手机中转”后电脑会停止 BLE。代码、Windows BLE 扫描冒烟和自动化测试已通过，但尚缺 Xiaomi Smart Band 10 真机通知/重连/续航验收，不能把它视为已完成的正式设备认证。
-
-功耗根因、官方依据和下一轮 A/B 测试指标见 [docs/POWER_OPTIMIZATION.md](docs/POWER_OPTIMIZATION.md)。2026-07-21 的 5 秒省电档 20 分钟正常佩戴测试取得 1194 个真实样本，最大采样间隔 2005 ms、息屏交付 P95 4056 ms、最长无 callback 6016 ms，且无 WakeLock、服务重启、错误或崩溃。2026-07-23 的第二轮代码优化又移除了正式版逐批日志 flush、逐批 SharedPreferences 写入、每 30 秒节点重查和逐包 ACK，并为手机离线发现增加退避；这些改动仍需 60 分钟真机 A/B 验证。
-
-电脑程序会把 BPM 钳制到 `0..999`，并按顺序输出 `/avatar/parameters/HR_Value`、`HR_Hundreds`、`HR_Tens`、`HR_Ones`（全部为 OSC Int32），用于三位数 Avatar 显示；同时保留 `HRValid`、由 BPM 本地生成的 `HRPulse`，以及旧版 `HeartRate`、`HeartRateNormalized`、`HeartRateValid` 兼容参数。真实数据超时阈值会根据手机上报的发送间隔自动放宽（默认 5 秒档约 12.5 秒），超时后有效状态自动变为 false。
-
-Python 电脑端 v1.1.0 还提供 Avatar 参数测试、启动时 GitHub 正式版检查、配对二维码和按需诊断模式。普通模式不保留历史心率，也不要求手表/手机附加扩展诊断字段；开启诊断模式后，曲线默认显示最近 1 分钟，可用滑轨选择 1–10 分钟，并计算所选范围的最低/最高/平均 BPM。诊断样本追加写入内部 CSV，曲线通过独立读句柄从文件尾部读取所选时间窗，可边写边读且不会随整次会话长度全量扫描；只有手动点击“导出 CSV”才会生成用户选择的导出文件。模拟心率即使在普通模式也保留 `simulated/source` 两个安全标记，开启诊断 CSV 后会额外写入 `simulated` 列，防止导出后误当真实传感器记录。
-
-运行 Python 电脑端测试并构建单文件 EXE：
+Windows 测试与打包：
 
 ```powershell
 .\pc-python\.venv\Scripts\python.exe -m pytest .\pc-python\tests -q -p no:cacheprovider
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc-python\Build-Exe.ps1 -Python .\pc-python\.venv\Scripts\python.exe
 ```
-
-## GitHub 云端构建
-
-仓库中的 `Build distributables` GitHub Actions 工作流会在 Pull Request、`main` 更新和手动触发时运行：
-
-- 用 Gradle Wrapper 测试并构建 Wear OS 测试版与正式版两个 APK；
-- 用同一次任务构建 Android `phone-debug.apk`，确保两端 Debug 签名匹配；
-- 在 Windows Runner 上测试和打包 Python 单文件 EXE；
-- 为下载文件生成 `SHA256SUMS.txt`；
-- 将 Android 和 Windows 输出保存为14天的 Workflow Artifacts。
-
-在 GitHub 仓库打开 **Actions → Build distributables → 对应运行 → Artifacts** 即可下载。
-
-### Artifact 与 Release 的区别
-
-- **Artifact** 属于某一次 Actions 运行，主要用于测试和验证，当前设置保留14天。
-- **Release** 绑定一个 Git 标签（例如 `v1.0.0`），是面向使用者的长期版本页面；Release 本身不负责编译，通常发布 Actions 已验证的文件。
-- 当前 Android 云端产物是 Debug APK。同一次运行的手机与手表 APK 可以互通，但不同运行的临时 Debug 签名不适合作为长期覆盖升级方案。
-- 正式 Release APK 应使用一把稳定、离线备份且通过 GitHub Secrets 提供的发布签名密钥。Windows ZIP 不需要代码签名即可运行，但正式分发仍可另加 Authenticode 签名。
