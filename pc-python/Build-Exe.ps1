@@ -56,7 +56,7 @@ if (-not (Test-Path -LiteralPath $exe)) { throw "Python EXE was not created: $ex
 $selfTest = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -WindowStyle Hidden
 if (-not $selfTest.WaitForExit(15000)) {
     Stop-Process -Id $selfTest.Id -Force
-    throw "Packaged EXE self-test timed out"
+    throw "Packaged EXE self-test timed out after 15 seconds. Verify that the process can create nested directories under TEMP/TMP for PyInstaller onefile extraction."
 }
 if ($selfTest.ExitCode -ne 0) {
     throw "Packaged EXE self-test failed with exit code $($selfTest.ExitCode)"

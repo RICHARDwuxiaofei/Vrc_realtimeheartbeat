@@ -5,4 +5,5 @@ object RelayProtocol {
     const val ACK_PATH = "/hr/ack/v1"
     const val CONTROL_PATH = "/hr/control/v1"
     const val DEFAULT_PC_PORT = 9123
+    const val SIMULATED_SOURCE = "watch_diagnostic_simulator"
 }

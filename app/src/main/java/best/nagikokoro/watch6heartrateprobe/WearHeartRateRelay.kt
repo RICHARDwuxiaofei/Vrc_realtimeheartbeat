@@ -29,6 +29,7 @@ class WearHeartRateRelay(
         relayMode: WatchRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS,
         watchAckRequested: Boolean = true,
         messageType: String = "heart_rate",
+        simulated: Boolean = false,
     ) {
         val node = cachedNode
         if (node != null && node.isNearby) {
@@ -47,6 +48,7 @@ class WearHeartRateRelay(
                     relayMode,
                     watchAckRequested,
                     messageType,
+                    simulated,
                 ),
             )
             return
@@ -97,6 +99,7 @@ class WearHeartRateRelay(
                             relayMode,
                             watchAckRequested,
                             messageType,
+                            simulated,
                         ),
                     )
                 }
@@ -168,6 +171,7 @@ class WearHeartRateRelay(
         relayMode: WatchRelayMode,
         watchAckRequested: Boolean,
         messageType: String,
+        simulated: Boolean,
     ): ByteArray = RelaySamplePayload.build(
         sequence = sequence,
         sessionId = sessionId,
@@ -182,6 +186,7 @@ class WearHeartRateRelay(
         watchAckRequested = watchAckRequested,
         messageType = messageType,
         diagnosticMode = RelayDiagnosticModeStore.enabled,
+        simulated = simulated,
     )
 
     fun sendDiagnosticTest() {

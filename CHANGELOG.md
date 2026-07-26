@@ -25,6 +25,9 @@
 - 诊断样本追加写入内部 CSV；曲线用独立句柄从文件尾部读取所选窗口，支持边写边读且不会随长时会话全量扫描。
 - CSV 只在用户手动点击“导出”后生成用户文件，不会自动导出。
 - 手机端新增二维码配对、手机 → 电脑一键诊断和完整诊断信息面板。
+- 手表诊断版新增可手动启停的 60–80 BPM 平缓波动模拟器；模拟值按真实 `heart_rate` 链路进入手机、电脑和 OSC，用于充电座、未佩戴等无法取得传感器心率时的全链路验证。
+- 模拟包始终携带 `simulated=true` 和 `source=watch_diagnostic_simulator`；手机与电脑用黄色警告明确显示“非传感器”，诊断 CSV 也保留该标记。
+- 模拟器、按钮和生成器只编译进 `diagnostic` 源集，正式版不包含相关类或入口。
 
 ### 手表功耗优化
 
@@ -50,9 +53,11 @@
 
 ### 验证
 
-- Python 69 项 pytest、源码自检、手机中转 → 电脑直连 Tk UI 切换冒烟通过。
-- Python 单文件 EXE 构建、自检和打包后的 WinRT/Bleak `0x180D` 真实扫描通过。
-- Android 手表 diagnostic/production 与手机共执行 56 项单元测试，三个变体 Lint 均为 0 error，两个手表 APK 和手机 APK 构建成功。
+- Python 71 项 pytest、源码自检、手机中转 → 电脑直连 Tk UI 切换冒烟通过。
+- Python 单文件 EXE 构建、自检和打包后的 WinRT/Bleak `0x180D` 真实扫描通过；2026-07-27 重建产物 SHA-256 为 `cedcec7fe4b9e97e8aeab6748ca0d6c2bace2e4ebd31b3f601136325a1ab7716`。
+- 记录 PyInstaller onefile 在受限沙箱内因无法创建 `TEMP/TMP` 解包子目录而表现为 `--self-test` 卡住；正常 Windows 进程环境中打包 EXE 约 2 秒退出且退出码为 0，构建脚本保留 15 秒有界超时并提供权限诊断提示。
+- Android 手表 diagnostic/production 与手机共执行 58 项单元测试，三个变体 Lint 均为 0 error，两个手表 APK 和手机 APK 构建成功。
+- Galaxy Watch6 SM-R960、Galaxy S24 Ultra 和 Windows 在酒店 Wi-Fi 完成模拟心率真机闭环：电脑 15 秒收到 10 个带永久模拟标记的 75–79 BPM 包，端到端延迟约 409–862 ms，PC ACK 经手机返回手表；模拟器停止后不再发送。
 - 手表报告工具迁移后自检通过。
 - 测试环境附近没有开启共享心率的小米手环，因此 Windows 扫描通过不等于真机通知、重连和续航已经验证。
 

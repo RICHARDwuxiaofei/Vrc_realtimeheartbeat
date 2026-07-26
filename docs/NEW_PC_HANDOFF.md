@@ -62,12 +62,14 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 
 同一份源码产生两个 APK：
 
-- `diagnosticDebug`：测试版，保留 MeasureClient 探针、息屏/续航测试、原始事件、统计报告和链路诊断。
+- `diagnosticDebug`：测试版，保留 MeasureClient 探针、息屏/续航测试、原始事件、统计报告、链路诊断和 60–80 BPM 模拟心率。
 - `productionDebug`：日常正式版，固定使用 ExerciseClient，并提供“1 秒实时 / 5 秒省电 / 10 秒超省电”三个启动前可选档位。
 
 两版为了和手机 Wear Data Layer 通信，必须使用同一个 applicationId 和签名。因此不能在同一块手表上同时安装；互相覆盖就是升级或回退。当前“正式版”是功能正式版，仍为 debug 签名，不是商店发布签名。
 
 正式版默认使用 5 秒省电档；10 秒超省电档进一步减少 Data Layer 通信。只有用户明确选择 1 秒实时档时才注册约 1 Hz 直接心率传感器并使用有界滚动 `PARTIAL_WAKE_LOCK`。停止、异常、服务销毁和 Exercise 外部结束都会释放该锁。
+
+诊断版的模拟器使用每秒一次的有界随机游走生成 60–80 BPM，不读取传感器，适合手表放在充电座或未佩戴时验证完整链路。它刻意使用 `type=heart_rate`，所以会进入电脑 OSC；`simulated=true` 与 `source=watch_diagnostic_simulator` 必须始终保留，三端 UI 和 CSV 都据此声明“非传感器”。`MainActivity`、模拟器和生成器位于 `app/src/diagnostic`，production 编译产物不包含这些类。
 
 ### 手机端 `mobile/`
 
@@ -115,6 +117,7 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 - 数据超时后 `HRValid=false`，Avatar 可显示 `--` 或 `NO SIGNAL`。
 - 为兼容早期版本，同时发送 `HeartRate`、`HeartRateNormalized`、`HeartRateValid`。
 - `phone_test` 和 `relay_test` 只用于 ACK/链路诊断，不会冒充真实心率写入 Avatar 参数。
+- `watch_diagnostic_simulator` 是另一类明确的全链路模拟：它会进入 Avatar 参数，但必须同时携带 `simulated=true`，只允许从诊断版手表由用户手动启停。
 
 ## 6. 跨端诊断模式原理
 
@@ -139,8 +142,9 @@ PC 勾选诊断模式
 | `watchRelayIntervalSeconds` | 让手机与电脑采用不会误判超时的有效间隔 |
 | `watchAckRequested` | 正式版只按低频策略请求手表 ACK |
 | `phoneForwardIntervalSeconds` | 电脑计算动态超时 |
+| `simulated/source` | 仅模拟心率必须永久携带；普通模式也不得移除，用于三端警告和导出追溯 |
 
-诊断模式才增加 `sessionId`、原始 BPM、精度、手表电量/屏幕/发送模式、两端接收时间、手机局域网 IP、网络类型和 VPN 状态。手机在普通模式会再次主动删除这组字段，即使收到旧手表版本发来的扩展字段也不会继续传给电脑。
+诊断模式才增加 `sessionId`、原始 BPM、精度、手表电量/屏幕/发送模式、两端接收时间、手机局域网 IP、网络类型和 VPN 状态。手机在普通模式会再次主动删除这组字段，即使收到旧手表版本发来的扩展字段也不会继续传给电脑；但 `simulated` 和模拟 `source` 是安全标记，不属于可删除的诊断扩展字段。
 
 手机到电脑使用单工作线程和两个有界待发槽：
 
@@ -155,6 +159,7 @@ PC 勾选诊断模式
 - 写句柄每行 `flush`，读取使用独立句柄，因此 Windows 上可以边写边读。
 - 曲线默认 1 分钟，滑轨限制为 1–10 分钟；每次刷新从文件尾部反向读取，读到窗口边界立即停止，不随整次诊断时长线性变慢。
 - “导出 CSV”只是把当前内部文件复制到用户选择的位置。程序不会自动导出；正常退出时若有未导出行会提示。
+- CSV 的 `simulated` 列用于区分真实传感器与诊断模拟，不能在格式演进时删除。
 - 下一次程序启动并首次开启诊断时会重建内部临时 CSV。需要保留的数据必须在退出前手动导出。
 
 ## 8. 新电脑需要的环境
@@ -257,14 +262,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\WatchTestReport.
 
 2026-07-26 候选分支最新本地复核结果：
 
-- Python：69 项 pytest、源码入口自检、手机中转 → 电脑直连 Tk UI 切换冒烟通过。
-- Python EXE：删除 C# 并迁移图标后重新构建，打包后 `--self-test` 和 `--ble-scan-self-test` 均通过；最终 SHA-256 为 `29fcb0dc9559cc46ad183bc1c8b9a862448d86c0dc687f42ace81526c4f0b6e4`。
-- Android：手表 diagnostic/production 与手机共执行 56 项单元测试，0 失败、0 error、0 skip。
+- Python：71 项 pytest、源码入口自检、手机中转 → 电脑直连 Tk UI 切换冒烟通过。
+- Python EXE：删除 C# 并迁移图标后重新构建，打包后 `--self-test` 和 `--ble-scan-self-test` 均通过；2026-07-27 在正常 Windows 进程环境中重建的最终 SHA-256 为 `cedcec7fe4b9e97e8aeab6748ca0d6c2bace2e4ebd31b3f601136325a1ab7716`。PyInstaller onefile 必须能在 `TEMP/TMP` 下创建嵌套解包目录；受限沙箱会阻止解包并让 `--windowed` 进程看起来像自检卡住。
+- Android：手表 diagnostic 23 项、production 21 项、手机 14 项，共 58 项单元测试，0 失败、0 error、0 skip。
 - Android Lint：三个变体均为 0 error；剩余 warning 只有“依赖存在更新版本”的提示，候选分支没有为了追新而变更运行时依赖。
 - 构建：两个 Watch APK、Phone APK、Python EXE 均成功；三套 APK 元数据均为 `versionName=1.1.0`、`versionCode=2`。
 - 报告工具：迁移后的 `tools/WatchTestReport.ps1 -SelfTest` 通过。
+- 真机模拟闭环：2026-07-26 在酒店网络用 SM-R960 `10.25.24.253:43019`、SM-S928B 和 Windows 验证。手表累计发送 135 条后由 UI 停止；电脑 15 秒接收 10 条，全部为 `simulated=true`、`source=watch_diagnostic_simulator`、75–79 BPM，延迟 409–862 ms；手机匹配 PC ACK，手表收到 `pcAck=true`。
 
-自动化通过不等于 Galaxy Watch、手机、VRChat 的真机实收已经完成。命令行出现的 SDK XML 3/4 版本提示来自本机 Android Studio 与 command-line tools 版本差异，本轮未影响测试、Lint 或构建；换机时应让两者保持同一 Android Studio 发布周期。
+模拟闭环已经证明 Watch → Phone → PC → Phone → Watch 和模拟标记成立，但不等于真实传感器、VRChat Avatar 显示或长时功耗已经验收。命令行出现的 SDK XML 3/4 版本提示来自本机 Android Studio 与 command-line tools 版本差异，本轮未影响测试、Lint 或构建；换机时应让两者保持同一 Android Studio 发布周期。
 
 ## 11. 构建产物位置
 
@@ -310,6 +316,7 @@ $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
 - Python Windows GUI、UDP ACK、OSC、超时、三位数拆分和 HRPulse。
 - Python Windows 新增小米手环直连输入：只在用户选择时启动 WinRT/Bleak，手机 UDP 与电脑 BLE 互斥；0x180D 扫描、0x2A37 订阅、设备记忆、5 秒重连和打包后扫描均已实现，仍待小米手环真机通知验证。
 - v1.1.0 Python GUI 已加入默认关闭的按需诊断模式、1–10 分钟可调曲线（默认 1 分钟）、最低/最高/平均 BPM、Avatar 参数测试、边写边读的内部诊断 CSV、仅手动用户导出、GitHub 更新检查、配对二维码和电脑诊断；手机端已加入扫码配对和完整诊断模式。电脑通过 UDP ACK 控制手机，手机只在模式变化时通知手表，普通包不携带原始 BPM、精度、电量、屏幕状态等扩展字段。
+- 诊断版手表新增 60–80 BPM 模拟器，在无法读取传感器时测试真实 `heart_rate`/OSC 路径；永久模拟标记由手机、电脑 UI 和 CSV 保留，正式版源集不包含模拟器。
 - 2026-07-25 代码复核修正了长时 CSV 全量扫描、诊断请求可能被心率覆盖、普通模式遗留 `sessionId`、UDP ACK 来源未绑定和正式版重复警告写日志的问题，并增加对应回归测试。
 
 换机后按顺序继续：

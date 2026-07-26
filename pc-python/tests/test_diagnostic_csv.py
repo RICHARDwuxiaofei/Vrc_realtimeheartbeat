@@ -15,6 +15,7 @@ def test_csv_can_be_read_while_append_handle_is_open() -> None:
         HeartRateSample(100_000, 72, "192.168.1.2", 14),
         {
             "source": "xiaomi_band_ble",
+            "simulated": True,
             "sourceDeviceName": "Xiaomi Smart Band 10",
             "sourceDeviceAddress": "AA:BB:CC:DD:EE:FF",
             "pcDirectBle": True,
@@ -30,6 +31,8 @@ def test_csv_can_be_read_while_append_handle_is_open() -> None:
     assert [sample.bpm for sample in store.read_window(100_000, 1)] == [72]
     csv_text = store.path.read_text(encoding="utf-8")
     assert "xiaomi_band_ble" in csv_text
+    assert "simulated" in csv_text
+    assert "True" in csv_text
     assert "Xiaomi Smart Band 10" in csv_text
     assert "0000180d-0000-1000-8000-00805f9b34fb" in csv_text
 

@@ -17,6 +17,7 @@ object RelaySamplePayload {
         watchAckRequested: Boolean,
         messageType: String,
         diagnosticMode: Boolean,
+        simulated: Boolean = false,
     ): ByteArray {
         val payload = JSONObject()
             .put("version", RelayProtocol.PROTOCOL_VERSION)
@@ -26,6 +27,11 @@ object RelaySamplePayload {
             .put("bpm", bpm)
             .put("watchRelayIntervalSeconds", relayMode.intervalSeconds)
             .put("watchAckRequested", watchAckRequested)
+        if (simulated) {
+            payload
+                .put("simulated", true)
+                .put("source", RelayProtocol.SIMULATED_SOURCE)
+        }
         if (diagnosticMode) {
             payload
                 .put("diagnosticMode", true)

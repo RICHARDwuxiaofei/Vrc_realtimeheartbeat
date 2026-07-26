@@ -6,4 +6,5 @@ object RelayProtocol {
     const val ACK_PATH = "/hr/ack/v1"
     const val CONTROL_PATH = "/hr/control/v1"
     const val PROTOCOL_VERSION = 1
+    const val SIMULATED_SOURCE = "watch_diagnostic_simulator"
 }

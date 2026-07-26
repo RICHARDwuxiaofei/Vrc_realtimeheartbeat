@@ -22,6 +22,10 @@ class HeartRatePacket:
     def is_real_heart_rate(self) -> bool:
         return self.packet_type == "heart_rate"
 
+    @property
+    def is_simulated(self) -> bool:
+        return self.payload.get("simulated") is True
+
 
 def _required_int(payload: dict[str, Any], name: str) -> int:
     value = payload.get(name)

@@ -221,7 +221,9 @@ private fun RelayScreen() {
                     "Galaxy Watch6"
                 },
                 if (watchAlive) {
-                    if (state.diagnosticMode) {
+                    if (state.simulated) {
+                        "模拟心率（非传感器）"
+                    } else if (state.diagnosticMode) {
                         "${sourceLabel(state.heartRateSource)}正常 · 序号 ${state.lastSequence ?: "--"}"
                     } else {
                         "${sourceLabel(state.heartRateSource)}正常"
@@ -352,6 +354,7 @@ private fun RelayScreen() {
                         )
                         Metric("手表发送模式", state.watchRelayMode ?: "--")
                         Metric("心率来源", sourceLabel(state.heartRateSource))
+                        Metric("数据性质", if (state.simulated) "模拟（非传感器）" else "真实传感器")
                         if (state.heartRateSource == HeartRateSource.XIAOMI_BAND_BLE) {
                             Metric("BLE 设备", state.xiaomiDeviceName ?: "--")
                             Metric("BLE 地址", state.xiaomiDeviceAddress ?: "--")
@@ -430,14 +433,28 @@ private fun HeartRateHero(state: PhoneRelayState, now: Long, watchAlive: Boolean
         ) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.size(9.dp).clip(CircleShape).background(if (watchAlive) Success else Muted))
-                    Text(if (watchAlive) "LIVE SENSOR" else "WAITING", color = if (watchAlive) Success else Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    val liveColor = if (state.simulated) Color(0xFFFFC56D) else if (watchAlive) Success else Muted
+                    Box(Modifier.size(9.dp).clip(CircleShape).background(liveColor))
+                    Text(
+                        when {
+                            state.simulated && watchAlive -> "SIMULATED · NOT SENSOR"
+                            watchAlive -> "LIVE SENSOR"
+                            else -> "WAITING"
+                        },
+                        color = liveColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
                 Text(state.currentBpm?.toString() ?: "--", fontSize = 66.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Text("BPM", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AccentCoral)
                 Text(
-                    state.lastSampleMillis?.let { "采样于 ${formatTime(it)} · ${ageText(now, it)}" }
-                        ?: "等待${sourceLabel(state.heartRateSource)}数据",
+                    if (state.simulated && state.lastSampleMillis != null) {
+                        "模拟数据 · ${formatTime(state.lastSampleMillis)} · ${ageText(now, state.lastSampleMillis)}"
+                    } else {
+                        state.lastSampleMillis?.let { "采样于 ${formatTime(it)} · ${ageText(now, it)}" }
+                            ?: "等待${sourceLabel(state.heartRateSource)}数据"
+                    },
                     color = Muted,
                     fontSize = 13.sp,
                 )

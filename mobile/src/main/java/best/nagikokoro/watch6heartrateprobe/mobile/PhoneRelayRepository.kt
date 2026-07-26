@@ -29,6 +29,7 @@ data class PhoneRelayState(
     val watchNodeId: String = "--",
     val watchConnected: Boolean = false,
     val currentBpm: Int? = null,
+    val simulated: Boolean = false,
     val receivedCount: Long = 0,
     val forwardedCount: Long = 0,
     val pcAckCount: Long = 0,
@@ -102,6 +103,7 @@ object PhoneRelayRepository {
                 heartRateSource = source,
                 watchConnected = false,
                 currentBpm = null,
+                simulated = false,
                 lastSampleMillis = null,
                 lastPhoneReceiveMillis = null,
                 watchRelayIntervalSeconds = null,
@@ -267,6 +269,7 @@ object PhoneRelayRepository {
         val watchRelayInterval = json.optInt("watchRelayIntervalSeconds", 0).takeIf { it in 1..30 }
         val watchRelayMode = json.optString("watchRelayMode").takeIf { it.isNotBlank() }
         val watchAckRequested = json.optBoolean("watchAckRequested", true)
+        val simulated = json.optBoolean("simulated", false)
         val effectiveForwardInterval = maxOf(
             mutableState.value.forwardIntervalSeconds,
             watchRelayInterval ?: 0,
@@ -280,13 +283,17 @@ object PhoneRelayRepository {
         } else {
             RelayDiagnosticFields.names.forEach(json::remove)
         }
-        json.put("source", HeartRateSource.GALAXY_WATCH.wireName)
+        json.put(
+            "source",
+            if (simulated) RelayProtocol.SIMULATED_SOURCE else HeartRateSource.GALAXY_WATCH.wireName,
+        )
         json.put("phoneForwardIntervalSeconds", effectiveForwardInterval)
         update {
             it.copy(
                 watchNodeId = sourceNodeId,
                 watchConnected = true,
                 currentBpm = bpm,
+                simulated = simulated,
                 receivedCount = it.receivedCount + 1,
                 lastSequence = sequence.takeIf { value -> value >= 0 },
                 lastSampleMillis = sampleMillis,
@@ -355,6 +362,7 @@ object PhoneRelayRepository {
                 watchNodeId = address,
                 watchConnected = true,
                 currentBpm = bpm,
+                simulated = false,
                 receivedCount = it.receivedCount + 1,
                 lastSequence = sequence,
                 lastSampleMillis = now,

@@ -771,6 +771,7 @@ class HeartRateBridgeApp:
             source = str(packet.payload.get("source", "galaxy_watch"))
             source_text = {
                 "galaxy_watch": "Galaxy Watch",
+                "watch_diagnostic_simulator": "手表模拟心率（非传感器）",
                 "xiaomi_band_ble": "小米手环 BLE",
                 "xiaomi_band_pc_ble": "小米手环 → 电脑 BLE",
             }.get(source, source)
@@ -779,8 +780,8 @@ class HeartRateBridgeApp:
             latency = int(data["latency_ms"])
             if packet.is_real_heart_rate:
                 self.bpm_text.set(str(packet.bpm))
-                self.signal_text.set("数据正常")
-                self.signal_label.configure(fg=GOOD)
+                self.signal_text.set("模拟心率（非传感器）" if packet.is_simulated else "数据正常")
+                self.signal_label.configure(fg=WARN if packet.is_simulated else GOOD)
                 if self.diagnostic_mode.get():
                     now_ms = int(time.time() * 1_000)
                     sample = HeartRateSample(now_ms, packet.bpm, data["sender"], latency)
