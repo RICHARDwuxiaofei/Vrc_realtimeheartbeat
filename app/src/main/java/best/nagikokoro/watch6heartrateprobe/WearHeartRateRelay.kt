@@ -4,7 +4,6 @@ import android.content.Context
 import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.Node
 import com.google.android.gms.wearable.Wearable
-import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 
 class WearHeartRateRelay(
@@ -15,7 +14,7 @@ class WearHeartRateRelay(
     private val messageClient = Wearable.getMessageClient(context.applicationContext)
     private val resolving = AtomicBoolean(false)
     private var cachedNode: Node? = null
-    private var cacheExpiresMillis = 0L
+    private var nextResolveAllowedMillis = 0L
 
     fun sendSample(
         sequence: Long,
@@ -27,10 +26,13 @@ class WearHeartRateRelay(
         accuracy: String,
         batteryPercent: Int,
         screenInteractive: Boolean,
+        relayMode: WatchRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS,
+        watchAckRequested: Boolean = true,
         messageType: String = "heart_rate",
+        simulated: Boolean = false,
     ) {
         val node = cachedNode
-        if (node != null && node.isNearby && System.currentTimeMillis() < cacheExpiresMillis) {
+        if (node != null && node.isNearby) {
             sendToNode(
                 node,
                 samplePayload(
@@ -43,18 +45,24 @@ class WearHeartRateRelay(
                     accuracy,
                     batteryPercent,
                     screenInteractive,
+                    relayMode,
+                    watchAckRequested,
                     messageType,
+                    simulated,
                 ),
             )
             return
         }
+        val now = System.currentTimeMillis()
+        if (now < nextResolveAllowedMillis) return
         if (!resolving.compareAndSet(false, true)) return
+        nextResolveAllowedMillis = now + DISCOVERY_RETRY_MILLIS
         capabilityClient
             .getCapability(RelayProtocol.PHONE_CAPABILITY, CapabilityClient.FILTER_REACHABLE)
             .addOnSuccessListener { capability ->
                 val nearby = capability.nodes.firstOrNull { it.isNearby }
                 cachedNode = nearby
-                cacheExpiresMillis = System.currentTimeMillis() + NODE_CACHE_MILLIS
+                if (nearby != null) nextResolveAllowedMillis = 0L
                 RelayStatusStore.update {
                     it.copy(
                         phoneNearby = nearby != null,
@@ -69,11 +77,13 @@ class WearHeartRateRelay(
                         mapOf("capability" to RelayProtocol.PHONE_CAPABILITY),
                     )
                 } else {
-                    logger.info(
-                        "PHONE_RELAY_DISCOVERED",
-                        "Nearby phone companion discovered over Data Layer",
-                        mapOf("nodeId" to nearby.id, "nodeName" to nearby.displayName, "isNearby" to nearby.isNearby),
-                    )
+                    if (!BuildConfig.PRODUCTION_EDITION) {
+                        logger.info(
+                            "PHONE_RELAY_DISCOVERED",
+                            "Nearby phone companion discovered over Data Layer",
+                            mapOf("nodeId" to nearby.id, "nodeName" to nearby.displayName, "isNearby" to nearby.isNearby),
+                        )
+                    }
                     sendToNode(
                         nearby,
                         samplePayload(
@@ -86,12 +96,16 @@ class WearHeartRateRelay(
                             accuracy,
                             batteryPercent,
                             screenInteractive,
+                            relayMode,
+                            watchAckRequested,
                             messageType,
+                            simulated,
                         ),
                     )
                 }
             }
             .addOnFailureListener { failure ->
+                nextResolveAllowedMillis = System.currentTimeMillis() + DISCOVERY_RETRY_MILLIS
                 RelayStatusStore.update {
                     it.copy(phoneNearby = false, failedCount = it.failedCount + 1, lastError = failure.message ?: failure.javaClass.name)
                 }
@@ -117,14 +131,17 @@ class WearHeartRateRelay(
                         lastError = "--",
                     )
                 }
-                logger.info(
-                    "PHONE_RELAY_MESSAGE_QUEUED",
-                    "Data Layer message queued to the nearby phone",
-                    mapOf("nodeId" to node.id, "nodeName" to node.displayName, "payloadBytes" to payload.size),
-                )
+                if (!BuildConfig.PRODUCTION_EDITION) {
+                    logger.info(
+                        "PHONE_RELAY_MESSAGE_QUEUED",
+                        "Data Layer message queued to the nearby phone",
+                        mapOf("nodeId" to node.id, "nodeName" to node.displayName, "payloadBytes" to payload.size),
+                    )
+                }
             }
             .addOnFailureListener { failure ->
                 cachedNode = null
+                nextResolveAllowedMillis = System.currentTimeMillis() + SEND_FAILURE_RETRY_MILLIS
                 RelayStatusStore.update { status ->
                     status.copy(
                         phoneNearby = false,
@@ -151,23 +168,29 @@ class WearHeartRateRelay(
         accuracy: String,
         batteryPercent: Int,
         screenInteractive: Boolean,
+        relayMode: WatchRelayMode,
+        watchAckRequested: Boolean,
         messageType: String,
-    ): ByteArray = JSONObject()
-        .put("version", RelayProtocol.PROTOCOL_VERSION)
-        .put("type", messageType)
-        .put("sessionId", sessionId)
-        .put("sequence", sequence)
-        .put("sampleEpochMillis", sampleEpochMillis)
-        .put("watchReceivedEpochMillis", receivedEpochMillis)
-        .put("bpm", bpm)
-        .put("rawBpm", rawBpm)
-        .put("accuracy", accuracy)
-        .put("watchBatteryPercent", batteryPercent)
-        .put("watchScreenInteractive", screenInteractive)
-        .toString()
-        .toByteArray(Charsets.UTF_8)
+        simulated: Boolean,
+    ): ByteArray = RelaySamplePayload.build(
+        sequence = sequence,
+        sessionId = sessionId,
+        sampleEpochMillis = sampleEpochMillis,
+        receivedEpochMillis = receivedEpochMillis,
+        bpm = bpm,
+        rawBpm = rawBpm,
+        accuracy = accuracy,
+        batteryPercent = batteryPercent,
+        screenInteractive = screenInteractive,
+        relayMode = relayMode,
+        watchAckRequested = watchAckRequested,
+        messageType = messageType,
+        diagnosticMode = RelayDiagnosticModeStore.enabled,
+        simulated = simulated,
+    )
 
     fun sendDiagnosticTest() {
+        nextResolveAllowedMillis = 0L
         val now = System.currentTimeMillis()
         sendSample(
             sequence = now,
@@ -184,6 +207,7 @@ class WearHeartRateRelay(
     }
 
     companion object {
-        private const val NODE_CACHE_MILLIS = 30_000L
+        private const val DISCOVERY_RETRY_MILLIS = 60_000L
+        private const val SEND_FAILURE_RETRY_MILLIS = 15_000L
     }
 }

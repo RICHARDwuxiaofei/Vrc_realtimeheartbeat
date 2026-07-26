@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: HeartRateViewModel by viewModels()
     private lateinit var permissionManager: PermissionManager
     private lateinit var ambientObserver: AmbientLifecycleObserver
+    private lateinit var diagnosticSimulator: DiagnosticHeartRateSimulator
     private var pendingStartAfterPermission = false
     private var restoreChecked = false
 
@@ -83,6 +84,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         permissionManager = PermissionManager(this)
+        diagnosticSimulator = DiagnosticHeartRateSimulator(this, DiagnosticLogger.get(this))
         ambientObserver = AmbientLifecycleObserver(
             this,
             object : AmbientLifecycleObserver.AmbientLifecycleCallback {
@@ -126,13 +128,25 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val state by viewModel.uiState.collectAsStateWithLifecycle()
                 val relayStatus by RelayStatusStore.state.collectAsStateWithLifecycle()
+                val simulationState by diagnosticSimulator.state.collectAsStateWithLifecycle()
                 val relayTester = remember { WearHeartRateRelay(this@MainActivity, DiagnosticLogger.get(this@MainActivity)) }
                 HeartRateProbeScreen(
                     state = state,
                     relayStatus = relayStatus,
+                    simulationState = simulationState,
                     onSendRelayTest = relayTester::sendDiagnosticTest,
+                    onToggleSimulation = {
+                        if (simulationState.active) {
+                            diagnosticSimulator.stop()
+                        } else {
+                            diagnosticSimulator.start()
+                        }
+                    },
                     onSelectMode = viewModel::selectMode,
-                    onStart = ::requestPermissionsAndStart,
+                    onStart = {
+                        diagnosticSimulator.stop()
+                        requestPermissionsAndStart()
+                    },
                     onStop = viewModel::stopSelectedMode,
                     onRequestPermission = { requestHeartRatePermission(startAfterGrant = false) },
                     onClearLog = viewModel::clearVisibleLog,
@@ -188,6 +202,7 @@ class MainActivity : ComponentActivity() {
         )
         lifecycle.removeObserver(ambientObserver)
         runCatching { unregisterReceiver(screenReceiver) }
+        if (::diagnosticSimulator.isInitialized) diagnosticSimulator.close()
         super.onDestroy()
     }
 
@@ -251,7 +266,9 @@ class MainActivity : ComponentActivity() {
 private fun HeartRateProbeScreen(
     state: ProbeUiState,
     relayStatus: RelayStatus,
+    simulationState: DiagnosticSimulationState,
     onSendRelayTest: () -> Unit,
+    onToggleSimulation: () -> Unit,
     onSelectMode: (ProbeMode) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -461,6 +478,27 @@ private fun HeartRateProbeScreen(
             duration = duration,
         )
         Spacer(Modifier.height(10.dp))
+        Text(
+            "模拟链路（非传感器）",
+            color = Color(0xFFFFC56D),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            if (simulationState.active) {
+                "正在发送 ${simulationState.bpm ?: "--"} BPM · 已发送 ${simulationState.sentCount} 条"
+            } else {
+                "生成 60–80 BPM 平缓波动，并作为 heart_rate 进入手机、电脑和 OSC，仅用于链路测试。"
+            },
+            color = Color.LightGray,
+            fontSize = 10.sp,
+            textAlign = TextAlign.Center,
+        )
+        ProbeButton(
+            if (simulationState.active) "停止模拟心率" else "开始模拟心率 60–80 BPM",
+            simulationState.active || !state.canStop,
+            onToggleSimulation,
+        )
         ProbeButton("手机/电脑中继测试（可选）", true, onSendRelayTest)
         if (state.visibleLogs.isNotEmpty()) ProbeButton("清除屏幕日志", true, onClearLog)
         Text("技术日志（${recentLogs.size}/20）", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
@@ -537,6 +575,7 @@ private fun StatusBlock(
         StatusLine("手机蓝牙中转", if (relayStatus.phoneNearby) "已连接 ${relayStatus.phoneName}" else "等待手机")
         StatusLine("已发 / 失败", "${relayStatus.sentCount} / ${relayStatus.failedCount}")
         StatusLine("电脑回执", if (relayStatus.lastPcAck) "已确认" else "等待")
+        StatusLine("远端诊断模式", booleanText(relayStatus.diagnosticMode))
         StatusLine("样本数", sampleCount.toString())
         StatusLine("最后更新时间", lastUpdate?.let(::formatTimestamp) ?: "--")
         StatusLine("数据年龄", dataAge?.let { "$it 秒" } ?: "--")

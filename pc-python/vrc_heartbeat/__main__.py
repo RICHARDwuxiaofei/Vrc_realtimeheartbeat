@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 
 from .app import main
+from .ble_direct import ble_dependency_available, ble_scan_self_test, parse_heart_rate_measurement
 from .osc import encode_message
+from .pairing import build_pairing_uri
 from .protocol import build_ack, parse_packet
 
 
@@ -17,10 +19,19 @@ def self_test() -> None:
     assert encode_message("/avatar/parameters/HR_Hundreds", 0)
     assert encode_message("/avatar/parameters/HR_Tens", 7)
     assert encode_message("/avatar/parameters/HR_Ones", 2)
+    pairing_uri = build_pairing_uri("192.168.1.88", 9123)
+    assert pairing_uri == "vrc-heartbeat://pair?host=192.168.1.88&port=9123"
+    import qrcode
+
+    assert qrcode.make(pairing_uri).size[0] > 0
+    assert ble_dependency_available()
+    assert parse_heart_rate_measurement(b"\x00\x48") == 72
 
 
 if __name__ == "__main__":
-    if "--self-test" in sys.argv:
+    if "--ble-scan-self-test" in sys.argv:
+        ble_scan_self_test()
+    elif "--self-test" in sys.argv:
         self_test()
     else:
         main()

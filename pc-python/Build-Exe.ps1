@@ -17,7 +17,7 @@ if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $repoRoot 'dist\windows-python'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$icon = Join-Path $repoRoot 'pc-bridge\assets\heart-relay.ico'
+$icon = Join-Path $bridgeRoot 'assets\heart-relay.ico'
 $entry = Join-Path $bridgeRoot 'run_app.py'
 $work = Join-Path $bridgeRoot 'build\pyinstaller'
 $spec = Join-Path $bridgeRoot 'build\spec'
@@ -52,6 +52,15 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCOD
 
 $exe = Join-Path $OutputDirectory 'VrcRealtimeHeartbeat-Python.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw "Python EXE was not created: $exe" }
+
+$selfTest = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -WindowStyle Hidden
+if (-not $selfTest.WaitForExit(15000)) {
+    Stop-Process -Id $selfTest.Id -Force
+    throw "Packaged EXE self-test timed out after 15 seconds. Verify that the process can create nested directories under TEMP/TMP for PyInstaller onefile extraction."
+}
+if ($selfTest.ExitCode -ne 0) {
+    throw "Packaged EXE self-test failed with exit code $($selfTest.ExitCode)"
+}
 
 Copy-Item (Join-Path $bridgeRoot 'README.md') (Join-Path $OutputDirectory 'README-Python.md') -Force
 $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()

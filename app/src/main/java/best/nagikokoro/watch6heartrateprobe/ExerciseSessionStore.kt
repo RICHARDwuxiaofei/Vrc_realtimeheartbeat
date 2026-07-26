@@ -37,6 +37,7 @@ data class ExerciseSessionSnapshot(
     val lastError: String = "--",
     val activityPhase: String = "PROCESS_START",
     val screenInteractive: Boolean = true,
+    val relayMode: WatchRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS,
 )
 
 class ExerciseSessionStore private constructor(context: Context) {
@@ -47,8 +48,19 @@ class ExerciseSessionStore private constructor(context: Context) {
     @Synchronized
     fun update(transform: (ExerciseSessionSnapshot) -> ExerciseSessionSnapshot) {
         val next = transform(_state.value)
+        if (next == _state.value) return
         _state.value = next
         persist(next)
+    }
+
+    /**
+     * Updates live UI/service state without scheduling a SharedPreferences write.
+     * Session boundaries still use [update], so process restoration remains durable.
+     */
+    @Synchronized
+    fun updateInMemory(transform: (ExerciseSessionSnapshot) -> ExerciseSessionSnapshot) {
+        val next = transform(_state.value)
+        if (next != _state.value) _state.value = next
     }
 
     fun markActivity(phase: String, interactive: Boolean) = update {
@@ -77,6 +89,7 @@ class ExerciseSessionStore private constructor(context: Context) {
         lastError = preferences.getString("lastError", "--") ?: "--",
         activityPhase = preferences.getString("activityPhase", "PROCESS_START") ?: "PROCESS_START",
         screenInteractive = preferences.getBoolean("screenInteractive", true),
+        relayMode = WatchRelayMode.fromStoredValue(preferences.getString("relayMode", null)),
     )
 
     private fun persist(value: ExerciseSessionSnapshot) {
@@ -100,6 +113,7 @@ class ExerciseSessionStore private constructor(context: Context) {
             putString("lastError", value.lastError)
             putString("activityPhase", value.activityPhase)
             putBoolean("screenInteractive", value.screenInteractive)
+            putString("relayMode", value.relayMode.name)
         }
     }
 

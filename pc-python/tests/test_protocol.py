@@ -34,6 +34,24 @@ def test_parse_real_packet():
     assert parsed.forward_interval_seconds == 5
 
 
+def test_source_field_is_preserved_for_pc_diagnostics():
+    parsed = parse_packet(packet(source="xiaomi_band_ble"))
+    assert parsed.payload["source"] == "xiaomi_band_ble"
+
+
+def test_simulated_heart_rate_is_marked_but_still_uses_real_pipeline():
+    parsed = parse_packet(
+        packet(source="watch_diagnostic_simulator", simulated=True, bpm=67)
+    )
+    assert parsed.is_real_heart_rate
+    assert parsed.is_simulated
+    assert parsed.payload["source"] == "watch_diagnostic_simulator"
+
+
+def test_simulated_marker_requires_json_boolean_true():
+    assert not parse_packet(packet(simulated="true")).is_simulated
+
+
 @pytest.mark.parametrize("interval, expected", [(-5, 1), (0, 1), (10, 10), (99, 30), ("5", 5)])
 def test_forward_interval_is_safe(interval, expected):
     assert parse_packet(packet(phoneForwardIntervalSeconds=interval)).forward_interval_seconds == expected
@@ -53,7 +71,12 @@ def test_ack_matches_existing_phone_contract():
         "type": "pc_ack",
         "sequence": 42,
         "pcEpochMillis": 9_000,
+        "diagnosticMode": False,
     }
+
+
+def test_ack_can_request_diagnostic_mode():
+    assert json.loads(build_ack(42, 9_000, diagnostic_mode=True))["diagnosticMode"] is True
 
 
 def test_latency_never_goes_negative():

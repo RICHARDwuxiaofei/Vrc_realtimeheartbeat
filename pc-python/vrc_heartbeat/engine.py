@@ -80,6 +80,23 @@ class BridgeEngine:
         self._stop_pulse()
         self.last_real_packet_ms = 0
 
+    def start_avatar_test(self, bpm: int = 123) -> None:
+        """Send every supported Avatar parameter without changing live state."""
+        self._send_heart_rate(bpm)
+        self._send_osc("/avatar/parameters/HeartRateValid", True)
+        self._send_osc("/avatar/parameters/HRValid", True)
+        self._send_osc("/avatar/parameters/HRPulse", True)
+
+    def finish_avatar_test(self) -> None:
+        self._send_osc("/avatar/parameters/HRPulse", False)
+        if self.valid and self.current_bpm > 0:
+            self._send_heart_rate(self.current_bpm)
+            self._send_osc("/avatar/parameters/HeartRateValid", True)
+            self._send_osc("/avatar/parameters/HRValid", True)
+        else:
+            self._send_osc("/avatar/parameters/HeartRateValid", False)
+            self._send_osc("/avatar/parameters/HRValid", False)
+
     def _send_heart_rate(self, bpm: int) -> None:
         value = clamp_osc_bpm(bpm)
         hundreds, tens, ones = split_three_digits(value)

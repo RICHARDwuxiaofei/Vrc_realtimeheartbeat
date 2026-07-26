@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import ctypes
+from datetime import datetime
 import queue
 import socket
 import sys
+import threading
+import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
+import webbrowser
 
 from . import __version__
+from .analytics import HeartRateSample
+from .ble_direct import BleHeartRateClient
+from .diagnostic_csv import DiagnosticCsvStore
+from .input_sources import INPUT_SOURCE_LABELS, PHONE_RELAY, XIAOMI_PC_BLE
+from .pairing import build_pairing_uri
 from .runtime import BridgeRuntime, RuntimeConfig
 from .settings import AppSettings, load_settings, save_settings
+from .updates import fetch_latest_release, is_newer_version
 
 
 BG = "#f3f3f1"
@@ -22,6 +32,7 @@ ACCENT = "#c6404d"
 ACCENT_DARK = "#aa3340"
 GOOD = "#31845b"
 WARN = "#b07722"
+CHART_GRID = "#e8e8e5"
 
 
 def enable_dpi_awareness() -> None:
@@ -45,17 +56,43 @@ class HeartRateBridgeApp:
         self.settings = load_settings()
         self.runtime: BridgeRuntime | None = None
         self.events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self.ble_client = BleHeartRateClient(self._enqueue_event)
+        self.ble_devices: dict[str, tuple[str, str]] = {}
+        self.ble_connected = False
+        self.ble_scanning = False
         self.packet_count = 0
+        self.diagnostic_csv = DiagnosticCsvStore()
+        self.diagnostic_session_started = False
+        self.latest_release_url = ""
+        self._qr_photo: Any = None
 
         self.listen_port = tk.StringVar(value=str(self.settings.listen_port))
         self.osc_port = tk.StringVar(value=str(self.settings.osc_port))
         self.forward_osc = tk.BooleanVar(value=self.settings.forward_osc)
+        self.input_source_label = tk.StringVar(value=INPUT_SOURCE_LABELS[self.settings.input_source])
+        saved_ble_label = (
+            f"{self.settings.ble_name or '已保存设备'} · {self.settings.ble_address}"
+            if self.settings.ble_address
+            else ""
+        )
+        self.ble_device_choice = tk.StringVar(value=saved_ble_label)
+        self.ble_status_text = tk.StringVar(value="直连模式未启用")
+        self.diagnostic_mode = tk.BooleanVar(value=False)
+        self.chart_minutes = tk.IntVar(value=1)
         self.bpm_text = tk.StringVar(value="--")
-        self.signal_text = tk.StringVar(value="等待手机数据")
+        self.signal_text = tk.StringVar(
+            value="等待手机数据" if self.settings.input_source == PHONE_RELAY else "等待小米手环 BLE"
+        )
         self.detail_text = tk.StringVar(value="尚未收到数据包")
         self.receiver_text = tk.StringVar(value="未启动")
         self.phone_text = tk.StringVar(value="--")
         self.osc_text = tk.StringVar(value="已开启" if self.settings.forward_osc else "已关闭")
+        self.minimum_text = tk.StringVar(value="--")
+        self.maximum_text = tk.StringVar(value="--")
+        self.average_text = tk.StringVar(value="--")
+        self.csv_text = tk.StringVar(value="诊断模式未开启")
+        self.chart_title = tk.StringVar(value="最近 1 分钟心率曲线")
+        self.update_text = tk.StringVar(value="正在检查 GitHub…")
 
         self._configure_window()
         self._configure_styles()
@@ -63,11 +100,13 @@ class HeartRateBridgeApp:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(50, self._poll_events)
         self.root.after(250, self.start_receiver)
+        self.root.after(1_000, self._refresh_chart)
+        self.root.after(1_200, self.check_for_updates)
 
     def _configure_window(self) -> None:
         self.root.title("VRChat 心率桥 · Python")
-        self.root.geometry("800x720")
-        self.root.minsize(740, 660)
+        self.root.geometry("960x980")
+        self.root.minsize(840, 840)
         self.root.configure(background=BG)
         try:
             self.root.iconbitmap(_resource_path("heart-relay.ico"))
@@ -85,7 +124,7 @@ class HeartRateBridgeApp:
             background=ACCENT,
             foreground="#ffffff",
             bordercolor=ACCENT,
-            padding=(18, 8),
+            padding=(14, 8),
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         style.map("Primary.TButton", background=[("active", ACCENT_DARK), ("disabled", "#d2a7ac")])
@@ -94,17 +133,17 @@ class HeartRateBridgeApp:
             background="#ececea",
             foreground=TEXT,
             bordercolor=BORDER,
-            padding=(18, 8),
+            padding=(14, 8),
             font=("Microsoft YaHei UI", 9),
         )
         style.map("Secondary.TButton", background=[("active", "#dfdfdc")])
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=BG)
-        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        outer.pack(fill="both", expand=True, padx=22, pady=16)
 
         header = tk.Frame(outer, bg=BG)
-        header.pack(fill="x", pady=(0, 14))
+        header.pack(fill="x", pady=(0, 11))
         tk.Label(header, text="♥", bg=BG, fg=ACCENT, font=("Segoe UI Symbol", 24, "bold")).pack(side="left")
         title_block = tk.Frame(header, bg=BG)
         title_block.pack(side="left", padx=(9, 0))
@@ -117,152 +156,305 @@ class HeartRateBridgeApp:
         ).pack(anchor="w")
         tk.Label(
             title_block,
-            text=f"Python 版 {__version__}   ·   Watch → Phone → PC",
+            text=f"Python 版 {__version__}   ·   Wearable → Phone / PC → OSC",
             bg=BG,
             fg=MUTED,
             font=("Microsoft YaHei UI", 8),
         ).pack(anchor="w", pady=(2, 0))
-        tk.Label(
+        update_button = ttk.Button(
             header,
-            text="本机 IPv4  " + ", ".join(local_ipv4_addresses()),
-            bg=BG,
-            fg=MUTED,
-            font=("Microsoft YaHei UI", 8),
-        ).pack(side="right", anchor="e", pady=(6, 0))
+            textvariable=self.update_text,
+            style="Secondary.TButton",
+            command=self._open_or_check_update,
+        )
+        update_button.pack(side="right", anchor="e", pady=(3, 0))
 
         summary = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
         summary.pack(fill="x")
-        bpm_column = tk.Frame(summary, bg=PANEL, width=280)
-        bpm_column.pack(side="left", fill="both", expand=True, padx=22, pady=18)
+        bpm_column = tk.Frame(summary, bg=PANEL)
+        bpm_column.pack(side="left", fill="both", expand=True, padx=22, pady=14)
         tk.Label(bpm_column, text="当前心率", bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(anchor="w")
         bpm_line = tk.Frame(bpm_column, bg=PANEL)
-        bpm_line.pack(anchor="w", pady=(3, 1))
-        tk.Label(
-            bpm_line,
-            textvariable=self.bpm_text,
-            bg=PANEL,
-            fg=TEXT,
-            font=("Segoe UI", 38, "bold"),
-        ).pack(side="left")
-        tk.Label(bpm_line, text=" BPM", bg=PANEL, fg=MUTED, font=("Segoe UI", 14, "bold")).pack(
-            side="left", anchor="s", pady=(0, 7)
+        bpm_line.pack(anchor="w")
+        tk.Label(bpm_line, textvariable=self.bpm_text, bg=PANEL, fg=TEXT, font=("Segoe UI", 34, "bold")).pack(side="left")
+        tk.Label(bpm_line, text=" BPM", bg=PANEL, fg=MUTED, font=("Segoe UI", 13, "bold")).pack(
+            side="left", anchor="s", pady=(0, 6)
         )
         self.signal_label = tk.Label(
-            bpm_column,
-            textvariable=self.signal_text,
-            bg=PANEL,
-            fg=MUTED,
+            bpm_column, textvariable=self.signal_text, bg=PANEL, fg=MUTED,
             font=("Microsoft YaHei UI", 9, "bold"),
         )
-        self.signal_label.pack(anchor="w", pady=(2, 0))
+        self.signal_label.pack(anchor="w")
         tk.Label(
-            bpm_column,
-            textvariable=self.detail_text,
-            bg=PANEL,
-            fg=MUTED,
+            bpm_column, textvariable=self.detail_text, bg=PANEL, fg=MUTED,
             font=("Microsoft YaHei UI", 8),
-        ).pack(anchor="w", pady=(4, 0))
+        ).pack(anchor="w", pady=(3, 0))
 
-        status_column = tk.Frame(summary, bg="#fafaf8", width=290)
-        status_column.pack(side="right", fill="y", padx=(0, 1), pady=1)
-        status_column.pack_propagate(False)
+        self.stats_panel = tk.Frame(summary, bg="#fafaf8")
+        tk.Label(self.stats_panel, text="所选时间范围", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
+            anchor="w", padx=18, pady=(15, 8)
+        )
+        stats_row = tk.Frame(self.stats_panel, bg="#fafaf8")
+        stats_row.pack(padx=18, pady=(0, 14))
+        self._stat_value(stats_row, "最低", self.minimum_text, 0)
+        self._stat_value(stats_row, "最高", self.maximum_text, 1)
+        self._stat_value(stats_row, "平均", self.average_text, 2)
+
+        self.status_column = tk.Frame(summary, bg="#fafaf8", width=240)
+        self.status_column.pack(side="right", fill="y", padx=(0, 1), pady=1)
+        self.status_column.pack_propagate(False)
+        tk.Label(self.status_column, text="连接状态", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
+            anchor="w", padx=18, pady=(15, 7)
+        )
+        self._status_row(self.status_column, "输入引擎", self.receiver_text)
+        self._status_row(self.status_column, "输入设备", self.phone_text)
+        self._status_row(self.status_column, "VRChat OSC", self.osc_text)
+
+        self.chart_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        chart_header = tk.Frame(self.chart_panel, bg=PANEL)
+        chart_header.pack(fill="x", padx=16, pady=(10, 2))
         tk.Label(
-            status_column,
-            text="连接状态",
-            bg="#fafaf8",
-            fg=TEXT,
+            chart_header, textvariable=self.chart_title, bg=PANEL, fg=TEXT,
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).pack(anchor="w", padx=20, pady=(17, 9))
-        self._status_row(status_column, "UDP 接收器", self.receiver_text)
-        self._status_row(status_column, "手机", self.phone_text)
-        self._status_row(status_column, "VRChat OSC", self.osc_text)
+        ).pack(side="left")
+        tk.Label(chart_header, textvariable=self.csv_text, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="right")
+        slider_row = tk.Frame(self.chart_panel, bg=PANEL)
+        slider_row.pack(fill="x", padx=16)
+        tk.Label(slider_row, text="显示范围", bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
+        tk.Scale(
+            slider_row,
+            from_=1,
+            to=10,
+            orient="horizontal",
+            variable=self.chart_minutes,
+            command=self._change_chart_minutes,
+            showvalue=True,
+            resolution=1,
+            bg=PANEL,
+            fg=TEXT,
+            highlightthickness=0,
+            troughcolor=CHART_GRID,
+            activebackground=ACCENT,
+        ).pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.chart = tk.Canvas(self.chart_panel, height=160, bg="#fafaf8", highlightthickness=0)
+        self.chart.pack(fill="x", padx=16, pady=(3, 13))
+        self.chart.bind("<Configure>", lambda _event: self._draw_chart())
 
-        settings_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        settings_panel.pack(fill="x", pady=(14, 0))
+        self.source_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        self.source_panel.pack(fill="x", pady=(11, 0))
         tk.Label(
-            settings_panel,
-            text="连接设置",
+            self.source_panel,
+            text="心率来源",
             bg=PANEL,
             fg=TEXT,
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=6, sticky="w", padx=18, pady=(14, 10))
-        self._entry_field(settings_panel, 1, 0, "手机 UDP 端口", self.listen_port)
-        self._entry_field(settings_panel, 1, 2, "VRChat OSC 端口", self.osc_port)
-        check = ttk.Checkbutton(
-            settings_panel,
-            text="发送到 VRChat OSC",
-            variable=self.forward_osc,
-            command=self._update_osc_label,
+        ).grid(row=0, column=0, columnspan=6, sticky="w", padx=16, pady=(11, 7))
+        self.source_combo = ttk.Combobox(
+            self.source_panel,
+            textvariable=self.input_source_label,
+            values=list(INPUT_SOURCE_LABELS.values()),
+            state="readonly",
+            width=28,
         )
-        check.grid(row=1, column=4, sticky="w", padx=(18, 8), pady=(0, 16))
-        self.start_button = ttk.Button(
-            settings_panel,
-            text="启动接收",
-            style="Primary.TButton",
-            command=self.start_receiver,
+        self.source_combo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(16, 6), pady=(0, 8))
+        self.source_combo.bind("<<ComboboxSelected>>", self._change_input_source)
+        self.ble_device_combo = ttk.Combobox(
+            self.source_panel,
+            textvariable=self.ble_device_choice,
+            state="disabled",
+            width=34,
         )
-        self.start_button.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(18, 6), pady=(0, 16))
-        self.stop_button = ttk.Button(
-            settings_panel,
-            text="停止",
+        self.ble_device_combo.grid(row=1, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+        self.ble_device_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_source_controls())
+        self.ble_scan_button = ttk.Button(
+            self.source_panel,
+            text="扫描",
             style="Secondary.TButton",
-            command=self.stop_receiver,
+            command=self.scan_ble_devices,
             state="disabled",
         )
-        self.stop_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 16))
+        self.ble_scan_button.grid(row=1, column=4, sticky="ew", padx=6, pady=(0, 8))
+        self.ble_connect_button = ttk.Button(
+            self.source_panel,
+            text="连接",
+            style="Primary.TButton",
+            command=self.connect_selected_ble_device,
+            state="disabled",
+        )
+        self.ble_connect_button.grid(row=1, column=5, sticky="ew", padx=(6, 16), pady=(0, 8))
         tk.Label(
-            settings_panel,
-            text="真实数据超时后自动发送 HRValid=false",
+            self.source_panel,
+            textvariable=self.ble_status_text,
             bg=PANEL,
             fg=MUTED,
             font=("Microsoft YaHei UI", 8),
-        ).grid(row=2, column=4, columnspan=2, sticky="e", padx=(12, 18), pady=(0, 16))
+        ).grid(row=2, column=0, columnspan=4, sticky="w", padx=16, pady=(0, 10))
+        self.ble_disconnect_button = ttk.Button(
+            self.source_panel,
+            text="断开 BLE",
+            style="Secondary.TButton",
+            command=self.disconnect_ble_device,
+            state="disabled",
+        )
+        self.ble_disconnect_button.grid(row=2, column=4, columnspan=2, sticky="e", padx=(6, 16), pady=(0, 10))
         for column in range(6):
+            self.source_panel.grid_columnconfigure(column, weight=1)
+
+        self.settings_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        self.settings_panel.pack(fill="x", pady=(11, 0))
+        settings_panel = self.settings_panel
+        tk.Label(settings_panel, text="连接与工具", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).grid(
+            row=0, column=0, columnspan=8, sticky="w", padx=16, pady=(12, 8)
+        )
+        self._entry_field(settings_panel, 1, 0, "手机 UDP 端口", self.listen_port)
+        self._entry_field(settings_panel, 1, 2, "VRChat OSC 端口", self.osc_port)
+        ttk.Checkbutton(
+            settings_panel, text="发送到 VRChat OSC", variable=self.forward_osc, command=self._update_osc_label,
+        ).grid(row=1, column=4, columnspan=2, sticky="w", padx=12, pady=(0, 12))
+        ttk.Checkbutton(
+            settings_panel, text="诊断模式（按需采集扩展数据）",
+            variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode,
+        ).grid(row=1, column=6, columnspan=2, sticky="w", padx=(8, 16), pady=(0, 12))
+
+        self.start_button = ttk.Button(settings_panel, text="启动接收", style="Primary.TButton", command=self.start_receiver)
+        self.start_button.grid(row=2, column=0, sticky="ew", padx=(16, 4), pady=(0, 13))
+        self.stop_button = ttk.Button(
+            settings_panel, text="停止", style="Secondary.TButton", command=self.stop_receiver, state="disabled",
+        )
+        self.stop_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(0, 13))
+        self.avatar_test_button = ttk.Button(
+            settings_panel, text="Avatar 参数测试", style="Secondary.TButton", command=self.send_avatar_test,
+            state="disabled",
+        )
+        self.avatar_test_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
+        self.qr_button = ttk.Button(
+            settings_panel, text="显示配对二维码", style="Secondary.TButton", command=self.show_pairing_qr,
+        )
+        self.qr_button.grid(row=2, column=4, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
+        self.diagnostic_button = ttk.Button(
+            settings_panel, text="一键诊断", style="Secondary.TButton", command=self.run_diagnostics,
+            state="disabled",
+        )
+        self.diagnostic_button.grid(row=2, column=6, sticky="ew", padx=4, pady=(0, 13))
+        self.export_button = ttk.Button(
+            settings_panel, text="导出 CSV…", style="Secondary.TButton", command=self.export_csv,
+            state="disabled",
+        )
+        self.export_button.grid(row=2, column=7, sticky="ew", padx=(4, 16), pady=(0, 13))
+        for column in range(8):
             settings_panel.grid_columnconfigure(column, weight=1)
 
         log_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        log_panel.pack(fill="both", expand=True, pady=(14, 0))
-        tk.Label(
-            log_panel,
-            text="运行记录",
-            bg=PANEL,
-            fg=TEXT,
-            font=("Microsoft YaHei UI", 10, "bold"),
-        ).pack(anchor="w", padx=18, pady=(13, 8))
-        self.log = tk.Text(
-            log_panel,
-            height=9,
-            wrap="word",
-            relief="flat",
-            borderwidth=0,
-            bg="#f7f7f5",
-            fg="#45484c",
-            insertbackground=TEXT,
-            font=("Cascadia Mono", 8),
-            padx=12,
-            pady=10,
-            state="disabled",
+        log_panel.pack(fill="both", expand=True, pady=(11, 0))
+        tk.Label(log_panel, text="运行记录", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).pack(
+            anchor="w", padx=16, pady=(10, 6)
         )
-        self.log.pack(fill="both", expand=True, padx=18, pady=(0, 16))
+        self.log = tk.Text(
+            log_panel, height=6, wrap="word", relief="flat", borderwidth=0,
+            bg="#f7f7f5", fg="#45484c", insertbackground=TEXT,
+            font=("Cascadia Mono", 8), padx=12, pady=8, state="disabled",
+        )
+        self.log.pack(fill="both", expand=True, padx=16, pady=(0, 13))
+        self._refresh_source_controls()
+
+    def _stat_value(self, parent: tk.Widget, label: str, value: tk.StringVar, column: int) -> None:
+        block = tk.Frame(parent, bg="#fafaf8")
+        block.grid(row=0, column=column, padx=(0 if column == 0 else 16, 0))
+        tk.Label(block, text=label, bg="#fafaf8", fg=MUTED, font=("Microsoft YaHei UI", 8)).pack()
+        tk.Label(block, textvariable=value, bg="#fafaf8", fg=TEXT, font=("Segoe UI", 17, "bold")).pack()
 
     def _status_row(self, parent: tk.Widget, label: str, value: tk.StringVar) -> None:
         row = tk.Frame(parent, bg="#fafaf8")
-        row.pack(fill="x", padx=20, pady=3)
+        row.pack(fill="x", padx=18, pady=2)
         tk.Label(row, text=label, bg="#fafaf8", fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
-        tk.Label(row, textvariable=value, bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 8, "bold")).pack(
-            side="right"
-        )
+        tk.Label(row, textvariable=value, bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 8, "bold")).pack(side="right")
 
     def _entry_field(self, parent: tk.Widget, row: int, column: int, label: str, variable: tk.StringVar) -> None:
         field = tk.Frame(parent, bg=PANEL)
-        field.grid(row=row, column=column, columnspan=2, sticky="ew", padx=(18, 6), pady=(0, 14))
+        field.grid(row=row, column=column, columnspan=2, sticky="ew", padx=(16 if column == 0 else 8, 4), pady=(0, 10))
         tk.Label(field, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w")
         entry = ttk.Entry(field, textvariable=variable, width=12)
-        entry.pack(fill="x", pady=(4, 0))
+        entry.pack(fill="x", pady=(3, 0))
         if variable is self.listen_port:
             self.listen_port_entry = entry
         elif variable is self.osc_port:
             self.osc_port_entry = entry
+
+    def _selected_input_source(self) -> str:
+        selected = self.input_source_label.get()
+        return next(
+            (key for key, label in INPUT_SOURCE_LABELS.items() if label == selected),
+            PHONE_RELAY,
+        )
+
+    def _change_input_source(self, _event: tk.Event | None = None) -> None:
+        source = self._selected_input_source()
+        if source == self.settings.input_source:
+            self._refresh_source_controls()
+            return
+        was_running = self.runtime is not None and self.runtime.running
+        if was_running:
+            self.stop_receiver()
+        self.settings.input_source = source
+        self.packet_count = 0
+        self.bpm_text.set("--")
+        self.detail_text.set("尚未收到当前来源数据")
+        self.phone_text.set("--")
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self._append_log(f"保存心率来源失败：{exc}")
+        self._refresh_source_controls()
+        if source == XIAOMI_PC_BLE:
+            self.signal_text.set("等待小米手环 BLE")
+            self._append_log("已切换为电脑直连小米手环；手机中转心率已禁用")
+        else:
+            self.signal_text.set("等待手机数据")
+            self._append_log("已切换为手机 UDP 中转；电脑 BLE 已禁用")
+        if was_running:
+            self.root.after(100, self.start_receiver)
+
+    def _refresh_source_controls(self) -> None:
+        direct = self._selected_input_source() == XIAOMI_PC_BLE
+        running = self.runtime is not None and self.runtime.running
+        direct_running = direct and running
+        available = direct_running and not self.ble_connected and not self.ble_scanning
+        self.ble_device_combo.configure(state="readonly" if available else "disabled")
+        self.ble_scan_button.configure(state="normal" if available else "disabled")
+        self.ble_connect_button.configure(
+            state="normal" if available and self.ble_device_choice.get() in self.ble_devices else "disabled"
+        )
+        self.ble_disconnect_button.configure(
+            state="normal" if direct_running and self.ble_connected else "disabled"
+        )
+        self.qr_button.configure(state="disabled" if direct else "normal")
+        if not direct:
+            self.ble_status_text.set("直连模式未启用；继续使用手机 UDP 中转")
+
+    def scan_ble_devices(self) -> None:
+        if self._selected_input_source() != XIAOMI_PC_BLE:
+            return
+        if self.runtime is None or not self.runtime.running:
+            messagebox.showinfo("扫描小米手环", "请先启动接收器。")
+            return
+        self.ble_scan_button.configure(state="disabled")
+        self.ble_status_text.set("正在扫描标准心率设备…")
+        self.ble_client.scan()
+
+    def connect_selected_ble_device(self) -> None:
+        selected = self.ble_devices.get(self.ble_device_choice.get())
+        if selected is None:
+            messagebox.showinfo("连接小米手环", "请先扫描并选择一个心率设备。")
+            return
+        address, name = selected
+        self.ble_client.connect(address, name)
+
+    def disconnect_ble_device(self) -> None:
+        self.ble_client.disconnect()
+        self.ble_connected = False
+        self.ble_scanning = False
+        self.ble_status_text.set("已断开；可重新扫描或连接")
+        self.phone_text.set("--")
 
     def start_receiver(self) -> None:
         if self.runtime is not None and self.runtime.running:
@@ -270,7 +462,15 @@ class HeartRateBridgeApp:
         try:
             listen_port = parse_port(self.listen_port.get())
             osc_port = parse_port(self.osc_port.get())
-            settings = AppSettings(listen_port, osc_port, self.forward_osc.get())
+            input_source = self._selected_input_source()
+            settings = AppSettings(
+                listen_port=listen_port,
+                osc_port=osc_port,
+                forward_osc=self.forward_osc.get(),
+                input_source=input_source,
+                ble_address=self.settings.ble_address,
+                ble_name=self.settings.ble_name,
+            )
             save_settings(settings)
             self.settings = settings
             self.runtime = BridgeRuntime(
@@ -278,25 +478,43 @@ class HeartRateBridgeApp:
                     listen_port=listen_port,
                     osc_port=osc_port,
                     forward_osc=self.forward_osc.get(),
+                    input_source=input_source,
                 ),
                 self._enqueue_event,
             )
             self.runtime.start()
+            self.runtime.set_diagnostic_mode(self.diagnostic_mode.get())
+            if input_source == XIAOMI_PC_BLE:
+                if not self.ble_client.start():
+                    raise RuntimeError("Windows BLE 组件无法启动")
+                self.ble_client.scan(auto_connect_address=self.settings.ble_address)
+            else:
+                self.ble_client.stop()
             self.start_button.configure(state="disabled")
             self.stop_button.configure(state="normal")
             self.listen_port_entry.configure(state="disabled")
             self.osc_port_entry.configure(state="disabled")
-            self._append_log(f"开始监听 UDP 0.0.0.0:{listen_port}")
-        except (ValueError, OSError) as exc:
+            if input_source == XIAOMI_PC_BLE:
+                self.receiver_text.set("BLE 直连引擎")
+                self._append_log("电脑 BLE 直连已启动；正在扫描标准心率服务 0x180D")
+            else:
+                self._append_log(f"开始监听 UDP 0.0.0.0:{listen_port}")
+            self._refresh_source_controls()
+        except (ValueError, OSError, RuntimeError) as exc:
             if self.runtime is not None:
                 self.runtime.stop()
                 self.runtime = None
+            self.ble_client.stop()
             self.receiver_text.set("启动失败")
             self.signal_text.set("无法启动接收器")
             self.signal_label.configure(fg=ACCENT)
             self._append_log(f"启动失败：{exc}")
+            self._refresh_source_controls()
 
     def stop_receiver(self) -> None:
+        self.ble_client.stop()
+        self.ble_connected = False
+        self.ble_scanning = False
         runtime, self.runtime = self.runtime, None
         if runtime is not None:
             runtime.stop()
@@ -307,6 +525,161 @@ class HeartRateBridgeApp:
         self.receiver_text.set("已停止")
         self.signal_text.set("接收器已停止")
         self.signal_label.configure(fg=MUTED)
+        self._refresh_source_controls()
+
+    def send_avatar_test(self) -> None:
+        runtime = self.runtime
+        if runtime is None or not runtime.running:
+            messagebox.showwarning("Avatar 参数测试", "请先启动接收器。")
+            return
+        if not self.forward_osc.get():
+            messagebox.showwarning("Avatar 参数测试", "请先开启“发送到 VRChat OSC”。")
+            return
+        if runtime.send_avatar_test(123):
+            self._append_log("已发送 Avatar 参数测试：123 BPM + HRValid + HRPulse")
+            self.signal_text.set("Avatar 测试已发送")
+            self.signal_label.configure(fg=GOOD)
+
+    def show_pairing_qr(self) -> None:
+        addresses = local_ipv4_addresses()
+        if not addresses or addresses == ["--"]:
+            messagebox.showerror("配对二维码", "没有找到可用的本机局域网 IPv4。")
+            return
+        try:
+            port = parse_port(self.listen_port.get())
+            uri = build_pairing_uri(addresses[0], port)
+            import qrcode
+            from PIL import ImageTk
+
+            image = qrcode.make(uri).resize((300, 300))
+            self._qr_photo = ImageTk.PhotoImage(image)
+        except ImportError:
+            messagebox.showerror("配对二维码", "二维码组件未安装，请重新安装或使用最新版 EXE。")
+            return
+        except ValueError as exc:
+            messagebox.showerror("配对二维码", str(exc))
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title("手机扫码配对")
+        popup.configure(bg=PANEL)
+        popup.resizable(False, False)
+        tk.Label(popup, image=self._qr_photo, bg=PANEL).pack(padx=24, pady=(22, 8))
+        tk.Label(popup, text=f"{addresses[0]}:{port}", bg=PANEL, fg=TEXT, font=("Segoe UI", 13, "bold")).pack()
+        tk.Label(
+            popup, text="在手机端点击“扫码配对”，识别后会自动保存电脑地址。",
+            bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9),
+        ).pack(padx=24, pady=(7, 20))
+
+    def run_diagnostics(self) -> None:
+        if not self.diagnostic_mode.get():
+            messagebox.showinfo("一键诊断", "请先开启诊断模式。")
+            return
+        runtime = self.runtime
+        direct = self._selected_input_source() == XIAOMI_PC_BLE
+        if direct:
+            checks = [
+                ("输入模式", True, "电脑直连小米手环 BLE"),
+                ("BLE 引擎", runtime is not None and runtime.running, self.receiver_text.get()),
+                ("小米手环", self.ble_connected, self.ble_status_text.get()),
+                ("真实心率", self.packet_count > 0, self.bpm_text.get() + " BPM"),
+                ("VRChat OSC", self.forward_osc.get(), f"127.0.0.1:{self.osc_port.get()}"),
+            ]
+        else:
+            addresses = local_ipv4_addresses()
+            checks = [
+                ("本机 IPv4", addresses != ["--"], ", ".join(addresses)),
+                ("UDP 接收器", runtime is not None and runtime.running, self.receiver_text.get()),
+                ("VRChat OSC", self.forward_osc.get(), f"127.0.0.1:{self.osc_port.get()}"),
+                ("手机数据", self.packet_count > 0, self.phone_text.get()),
+            ]
+        lines = [f"{'✓' if passed else '✗'} {name}：{detail}" for name, passed, detail in checks]
+        if all(passed for _, passed, _ in checks):
+            result = "电脑端链路状态正常。"
+        elif runtime is not None and runtime.running:
+            result = "接收器正常；未通过项可能只是当前来源尚未发送或 OSC 被关闭。"
+        else:
+            result = "请先启动接收器，再连接当前选择的心率来源。"
+        self._append_log("电脑诊断：" + "；".join(lines))
+        messagebox.showinfo("一键诊断", result + "\n\n" + "\n".join(lines))
+
+    def _toggle_diagnostic_mode(self) -> None:
+        enabled = self.diagnostic_mode.get()
+        if enabled:
+            try:
+                if self.diagnostic_session_started:
+                    self.diagnostic_csv.resume()
+                else:
+                    self.diagnostic_csv.begin()
+                    self.diagnostic_session_started = True
+            except OSError as exc:
+                self.diagnostic_mode.set(False)
+                messagebox.showerror("诊断模式", f"无法创建诊断 CSV：{exc}")
+                return
+            self.stats_panel.pack(side="left", fill="y", padx=1, pady=1, before=self.status_column)
+            self.chart_panel.pack(fill="x", pady=(11, 0), before=self.settings_panel)
+            self.avatar_test_button.configure(state="normal")
+            self.diagnostic_button.configure(state="normal")
+            self.export_button.configure(state="normal")
+            self.csv_text.set(f"CSV 追加写入 · {self.diagnostic_csv.row_count} 条")
+            self._append_log("诊断模式已开启：扩展字段、CSV、曲线和统计开始工作")
+        else:
+            self.diagnostic_csv.stop()
+            self.stats_panel.pack_forget()
+            self.chart_panel.pack_forget()
+            self.avatar_test_button.configure(state="disabled")
+            self.diagnostic_button.configure(state="disabled")
+            self.export_button.configure(state="disabled")
+            self.csv_text.set("诊断模式未开启")
+            self._append_log("诊断模式已关闭：停止扩展字段和 CSV 写入")
+        if self.runtime is not None:
+            self.runtime.set_diagnostic_mode(enabled)
+
+    def export_csv(self) -> None:
+        if self.diagnostic_csv.row_count == 0:
+            messagebox.showinfo("导出 CSV", "还没有诊断数据。请先开启诊断模式。")
+            return
+        filename = filedialog.asksaveasfilename(
+            title="导出心率 CSV",
+            defaultextension=".csv",
+            initialfile=f"heart-rate-{datetime.now():%Y%m%d-%H%M%S}.csv",
+            filetypes=[("CSV 文件", "*.csv")],
+        )
+        if not filename:
+            return
+        try:
+            from pathlib import Path
+
+            self.diagnostic_csv.export(Path(filename))
+            self._append_log(f"CSV 已手动导出：{filename}")
+            messagebox.showinfo("导出 CSV", f"已导出 {self.diagnostic_csv.row_count} 条数据。")
+        except OSError as exc:
+            messagebox.showerror("导出 CSV", f"写入失败：{exc}")
+
+    def _change_chart_minutes(self, value: str) -> None:
+        minutes = max(1, min(10, int(float(value))))
+        self.chart_minutes.set(minutes)
+        self.chart_title.set(f"最近 {minutes} 分钟心率曲线")
+        if self.diagnostic_mode.get():
+            self._refresh_chart_once()
+
+    def check_for_updates(self) -> None:
+        self.update_text.set("正在检查 GitHub…")
+
+        def worker() -> None:
+            try:
+                release = fetch_latest_release()
+                self._enqueue_event("update_result", release)
+            except Exception as exc:
+                self._enqueue_event("update_error", {"message": str(exc)})
+
+        threading.Thread(target=worker, name="github-update-check", daemon=True).start()
+
+    def _open_or_check_update(self) -> None:
+        if self.latest_release_url:
+            webbrowser.open(self.latest_release_url)
+        else:
+            self.check_for_updates()
 
     def _enqueue_event(self, kind: str, data: dict[str, Any]) -> None:
         self.events.put((kind, data))
@@ -324,23 +697,115 @@ class HeartRateBridgeApp:
         if kind == "listening":
             self.receiver_text.set(f"监听 {data['port']}")
             return
+        if kind == "direct_ready":
+            self.receiver_text.set("BLE 直连引擎")
+            return
+        if kind == "ble_devices":
+            self.ble_devices.clear()
+            labels: list[str] = []
+            for device in data.get("devices", []):
+                label = f"{device['name']} · {device['address']} · {device['rssi']} dBm"
+                labels.append(label)
+                self.ble_devices[label] = (str(device["address"]), str(device["name"]))
+            self.ble_device_combo.configure(values=labels)
+            preferred = next(
+                (
+                    label
+                    for label, (address, _name) in self.ble_devices.items()
+                    if address == self.settings.ble_address
+                ),
+                labels[0] if labels else "",
+            )
+            self.ble_device_choice.set(preferred)
+            self.ble_scan_button.configure(state="normal")
+            self._refresh_source_controls()
+            return
+        if kind == "ble_status":
+            message = str(data.get("message", "BLE 状态已更新"))
+            self.ble_status_text.set(message)
+            self.ble_scanning = bool(data.get("scanning", False))
+            connected = bool(data.get("connected", False))
+            self.ble_connected = connected
+            self.phone_text.set(str(data.get("name", "小米手环 BLE")) if connected else "--")
+            if connected:
+                self.signal_text.set("BLE 已连接，等待心率")
+                self.signal_label.configure(fg=GOOD)
+                address = str(data.get("address", ""))
+                name = str(data.get("name", "小米手环"))
+                if address:
+                    self.settings.ble_address = address
+                    self.settings.ble_name = name
+                    try:
+                        save_settings(self.settings)
+                    except OSError as exc:
+                        self._append_log(f"保存 BLE 设备失败：{exc}")
+            self._append_log(message)
+            self._refresh_source_controls()
+            return
+        if kind == "ble_error":
+            message = str(data.get("message", "未知 BLE 错误"))
+            self.ble_connected = False
+            self.ble_scanning = False
+            self.ble_status_text.set(message)
+            self.signal_text.set("BLE 连接异常")
+            self.signal_label.configure(fg=ACCENT)
+            self.ble_scan_button.configure(state="normal")
+            self._append_log(message)
+            self._refresh_source_controls()
+            return
+        if kind == "ble_warning":
+            self._append_log(str(data.get("message", "BLE 数据警告")))
+            return
+        if kind == "ble_heart_rate":
+            runtime = self.runtime
+            if runtime is not None:
+                runtime.accept_direct_heart_rate(
+                    int(data["bpm"]),
+                    int(data["sample_epoch_ms"]),
+                    str(data.get("name", "小米手环")),
+                    str(data.get("address", "")),
+                )
+            return
         if kind == "packet":
             packet = data["packet"]
+            source = str(packet.payload.get("source", "galaxy_watch"))
+            source_text = {
+                "galaxy_watch": "Galaxy Watch",
+                "watch_diagnostic_simulator": "手表模拟心率（非传感器）",
+                "xiaomi_band_ble": "小米手环 BLE",
+                "xiaomi_band_pc_ble": "小米手环 → 电脑 BLE",
+            }.get(source, source)
             self.packet_count += 1
             self.phone_text.set(data["sender"])
             latency = int(data["latency_ms"])
             if packet.is_real_heart_rate:
                 self.bpm_text.set(str(packet.bpm))
-                self.signal_text.set("数据正常")
-                self.signal_label.configure(fg=GOOD)
+                self.signal_text.set("模拟心率（非传感器）" if packet.is_simulated else "数据正常")
+                self.signal_label.configure(fg=WARN if packet.is_simulated else GOOD)
+                if self.diagnostic_mode.get():
+                    now_ms = int(time.time() * 1_000)
+                    sample = HeartRateSample(now_ms, packet.bpm, data["sender"], latency)
+                    try:
+                        self.diagnostic_csv.append(
+                            sample,
+                            packet.payload,
+                            datetime.fromtimestamp(now_ms / 1_000).isoformat(timespec="milliseconds"),
+                        )
+                        self.csv_text.set(f"CSV 追加写入 · {self.diagnostic_csv.row_count} 条")
+                    except OSError as exc:
+                        self._append_log(f"诊断 CSV 写入失败：{exc}")
+                    self._refresh_chart_once()
             else:
-                self.signal_text.set("链路测试通过")
+                self.signal_text.set("手机 → 电脑诊断通过")
                 self.signal_label.configure(fg=GOOD)
-            self.detail_text.set(f"数据包 {self.packet_count}   ·   端到端 {latency} ms")
-            self._append_log(
-                f"{packet.packet_type}  seq={packet.sequence}  bpm={packet.bpm}  "
-                f"phone={data['sender']}  latency={latency}ms  ack=ok"
+            self.detail_text.set(
+                f"{source_text}   ·   数据包 {self.packet_count}   ·   端到端 {latency} ms"
             )
+            if self.diagnostic_mode.get() or not packet.is_real_heart_rate:
+                self._append_log(
+                    f"{packet.packet_type}  seq={packet.sequence}  bpm={packet.bpm}  "
+                    f"source={source}  input={data['sender']}  latency={latency}ms  ack=ok"
+                )
             return
         if kind == "stale":
             self.bpm_text.set("--")
@@ -348,11 +813,90 @@ class HeartRateBridgeApp:
             self.signal_label.configure(fg=WARN)
             self._append_log("真实心率超时，已发送 HRValid=false")
             return
+        if kind == "update_result":
+            tag = str(data.get("tag", ""))
+            if is_newer_version(tag, __version__):
+                self.latest_release_url = str(data.get("url", ""))
+                self.update_text.set(f"发现新版本 {tag} · 点击打开")
+                self._append_log(f"GitHub 有新版本：{tag}")
+            else:
+                self.latest_release_url = ""
+                self.update_text.set(f"已是最新版 {__version__}")
+            return
+        if kind == "update_error":
+            self.update_text.set("更新检查失败 · 点击重试")
+            self._append_log("GitHub 更新检查失败：" + data.get("message", "未知错误"))
+            return
         if kind in {"invalid_packet", "error"}:
             self._append_log(data.get("message", kind))
             return
         if kind == "stopped":
             self.receiver_text.set("已停止")
+
+    def _refresh_chart(self) -> None:
+        if self.diagnostic_mode.get():
+            self._refresh_chart_once()
+        self.root.after(1_000, self._refresh_chart)
+
+    def _refresh_chart_once(self) -> None:
+        samples = self.diagnostic_csv.read_window(
+            int(time.time() * 1_000),
+            self.chart_minutes.get(),
+        )
+        self._update_stats(samples)
+        self._draw_chart(samples)
+
+    def _update_stats(self, samples: tuple[HeartRateSample, ...]) -> None:
+        if not samples:
+            self.minimum_text.set("--")
+            self.maximum_text.set("--")
+            self.average_text.set("--")
+            return
+        values = [sample.bpm for sample in samples]
+        self.minimum_text.set(str(min(values)))
+        self.maximum_text.set(str(max(values)))
+        self.average_text.set(f"{sum(values) / len(values):.1f}")
+
+    def _draw_chart(self, samples: tuple[HeartRateSample, ...] | None = None) -> None:
+        canvas = self.chart
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 200)
+        height = max(canvas.winfo_height(), 100)
+        left, top, right, bottom = 42, 12, width - 12, height - 24
+        for index in range(5):
+            y = top + (bottom - top) * index / 4
+            canvas.create_line(left, y, right, y, fill=CHART_GRID)
+        minutes = self.chart_minutes.get()
+        canvas.create_text(
+            left, bottom + 13, text=f"-{minutes} 分钟", anchor="w",
+            fill=MUTED, font=("Microsoft YaHei UI", 7),
+        )
+        canvas.create_text(right, bottom + 13, text="现在", anchor="e", fill=MUTED, font=("Microsoft YaHei UI", 7))
+        if samples is None:
+            samples = self.diagnostic_csv.read_window(int(time.time() * 1_000), minutes)
+        if not samples:
+            canvas.create_text(width / 2, height / 2, text="等待真实心率数据", fill=MUTED, font=("Microsoft YaHei UI", 10))
+            return
+        values = [item.bpm for item in samples]
+        low = max(30, min(values) - 10)
+        high = min(240, max(values) + 10)
+        if high - low < 20:
+            high = low + 20
+        now_ms = int(time.time() * 1_000)
+        window_ms = minutes * 60_000
+        start_ms = now_ms - window_ms
+        points: list[float] = []
+        for sample in samples:
+            x = left + (sample.epoch_ms - start_ms) / window_ms * (right - left)
+            y = bottom - (sample.bpm - low) / (high - low) * (bottom - top)
+            points.extend((x, y))
+        canvas.create_text(left - 5, top, text=str(high), anchor="e", fill=MUTED, font=("Segoe UI", 7))
+        canvas.create_text(left - 5, bottom, text=str(low), anchor="e", fill=MUTED, font=("Segoe UI", 7))
+        if len(points) >= 4:
+            canvas.create_line(*points, fill=ACCENT, width=2, smooth=True)
+        else:
+            x, y = points
+            canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill=ACCENT, outline="")
 
     def _update_osc_label(self) -> None:
         self.osc_text.set("已开启" if self.forward_osc.get() else "已关闭")
@@ -365,8 +909,6 @@ class HeartRateBridgeApp:
             self._append_log(f"保存设置失败：{exc}")
 
     def _append_log(self, line: str) -> None:
-        from datetime import datetime
-
         self.log.configure(state="normal")
         self.log.insert("end", f"{datetime.now():%H:%M:%S}  {line}\n")
         lines = int(self.log.index("end-1c").split(".")[0])
@@ -376,6 +918,16 @@ class HeartRateBridgeApp:
         self.log.configure(state="disabled")
 
     def close(self) -> None:
+        if self.diagnostic_csv.has_unexported_rows:
+            should_close = messagebox.askyesno(
+                "尚有未导出的 CSV 数据",
+                f"还有 {self.diagnostic_csv.row_count - self.diagnostic_csv.exported_row_count} 条记录未导出。\n"
+                "程序不会自动导出到用户文件，确定直接退出吗？",
+            )
+            if not should_close:
+                return
+        self.diagnostic_csv.stop()
+        self.ble_client.stop()
         runtime, self.runtime = self.runtime, None
         if runtime is not None:
             runtime.stop()
@@ -410,7 +962,7 @@ def _resource_path(name: str) -> str:
     frozen_root = getattr(sys, "_MEIPASS", None)
     if frozen_root:
         return str(Path(frozen_root) / name)
-    return str(Path(__file__).resolve().parents[2] / "pc-bridge" / "assets" / name)
+    return str(Path(__file__).resolve().parents[1] / "assets" / name)
 
 
 def main() -> None:

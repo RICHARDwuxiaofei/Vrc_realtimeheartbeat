@@ -8,11 +8,12 @@ class PhoneRelayListenerService : WearableListenerService() {
     override fun onCreate() {
         super.onCreate()
         PhoneRelayRepository.initialize(this)
-        Log.i(TAG, "PhoneRelayListenerService created")
     }
 
     override fun onMessageReceived(event: MessageEvent) {
-        Log.i(TAG, "Data Layer message path=${event.path} source=${event.sourceNodeId} bytes=${event.data.size}")
+        if (PhoneRelayRepository.isDiagnosticMode()) {
+            Log.i(TAG, "Data Layer message path=${event.path} source=${event.sourceNodeId} bytes=${event.data.size}")
+        }
         if (event.path == RelayProtocol.SAMPLE_PATH) {
             PhoneRelayRepository.handleWatchSample(event.sourceNodeId, event.data)
         }

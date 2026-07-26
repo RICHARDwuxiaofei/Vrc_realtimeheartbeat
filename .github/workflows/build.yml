@@ -74,52 +74,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  windows-csharp:
-    name: Windows C# fallback package
-    runs-on: windows-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Run bridge protocol self-test
-        shell: powershell
-        run: |
-          .\pc-bridge\HeartRateBridge.ps1 -SelfTest
-          .\pc-bridge\WatchTestReport.ps1 -SelfTest
-
-      - name: Build Windows bridge EXE
-        shell: powershell
-        run: |
-          .\pc-bridge\Build-Exe.ps1 -OutputDirectory '.\dist\windows'
-
-      - name: Package Windows bridge
-        shell: powershell
-        run: |
-          $output = Join-Path $env:GITHUB_WORKSPACE 'dist\windows'
-          $stage = Join-Path $env:RUNNER_TEMP 'VrcRealtimeHeartbeat-windows'
-          New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          Copy-Item (Join-Path $output 'VrcRealtimeHeartbeat.exe') $stage
-          Copy-Item '.\pc-bridge\README.md' $stage
-          Copy-Item '.\pc-bridge\WatchTestReport.ps1' $stage
-          $zip = Join-Path $output 'VrcRealtimeHeartbeat-windows.zip'
-          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
-          $exeHash = (Get-FileHash (Join-Path $output 'VrcRealtimeHeartbeat.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
-          $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          @(
-            "$exeHash  VrcRealtimeHeartbeat.exe"
-            "$zipHash  VrcRealtimeHeartbeat-windows.zip"
-          ) | Set-Content (Join-Path $output 'SHA256SUMS.txt') -Encoding ASCII
-
-      - name: Upload Windows package
-        uses: actions/upload-artifact@v6
-        with:
-          name: windows-csharp-heart-rate-bridge
-          path: dist/windows/
-          if-no-files-found: error
-          retention-days: 14
-
   windows-python:
     name: Windows Python bridge package
     runs-on: windows-latest

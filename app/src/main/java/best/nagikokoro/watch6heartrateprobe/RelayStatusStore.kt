@@ -12,6 +12,7 @@ data class RelayStatus(
     val lastAckMillis: Long? = null,
     val lastPcAck: Boolean = false,
     val lastError: String = "--",
+    val diagnosticMode: Boolean = false,
 )
 
 object RelayStatusStore {

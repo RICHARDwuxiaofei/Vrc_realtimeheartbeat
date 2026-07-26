@@ -25,6 +25,7 @@ class DiagnosticLogger private constructor(context: Context) {
 
     @Volatile
     private var currentState: ProbeStatus = ProbeStatus.INITIALIZING
+    private val productionWarningLimiter = EventRateLimiter(PRODUCTION_WARNING_INTERVAL_MILLIS)
 
     fun updateState(state: ProbeStatus) {
         currentState = state
@@ -62,6 +63,15 @@ class DiagnosticLogger private constructor(context: Context) {
         parameters: Map<String, Any?>,
         throwable: Throwable? = null,
     ) {
+        // Production keeps warnings and failures, but avoids per-sample Logcat,
+        // allocation and synchronous file flushes on the watch hot path.
+        if (BuildConfig.PRODUCTION_EDITION && (level == LogLevel.DEBUG || level == LogLevel.INFO)) return
+        if (
+            BuildConfig.PRODUCTION_EDITION &&
+            level == LogLevel.WARN &&
+            !productionWarningLimiter.allow(eventCode, System.currentTimeMillis())
+        ) return
+
         val entry = DiagnosticEntry(
             timestampMillis = System.currentTimeMillis(),
             level = level,
@@ -147,6 +157,7 @@ class DiagnosticLogger private constructor(context: Context) {
         const val LOG_FILE_NAME = "hr_probe.log"
         private const val MAX_MEMORY_ENTRIES = 100
         private const val MAX_FILE_BYTES = 1024L * 1024L
+        private const val PRODUCTION_WARNING_INTERVAL_MILLIS = 60_000L
         private val ISO_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX").withZone(ZoneId.systemDefault())
 

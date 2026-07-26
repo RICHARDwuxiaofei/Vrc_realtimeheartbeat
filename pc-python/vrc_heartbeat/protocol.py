@@ -22,6 +22,10 @@ class HeartRatePacket:
     def is_real_heart_rate(self) -> bool:
         return self.packet_type == "heart_rate"
 
+    @property
+    def is_simulated(self) -> bool:
+        return self.payload.get("simulated") is True
+
 
 def _required_int(payload: dict[str, Any], name: str) -> int:
     value = payload.get(name)
@@ -70,9 +74,14 @@ def parse_packet(data: bytes | str) -> HeartRatePacket:
     )
 
 
-def build_ack(sequence: int, now_ms: int) -> bytes:
+def build_ack(sequence: int, now_ms: int, diagnostic_mode: bool = False) -> bytes:
     return json.dumps(
-        {"type": "pc_ack", "sequence": sequence, "pcEpochMillis": now_ms},
+        {
+            "type": "pc_ack",
+            "sequence": sequence,
+            "pcEpochMillis": now_ms,
+            "diagnosticMode": diagnostic_mode,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")

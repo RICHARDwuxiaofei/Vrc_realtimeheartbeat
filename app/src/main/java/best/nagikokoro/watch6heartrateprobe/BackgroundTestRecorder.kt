@@ -1,5 +1,6 @@
 package best.nagikokoro.watch6heartrateprobe
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Process
 import androidx.core.content.edit
@@ -848,6 +849,7 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
         private val SESSION_ID_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS")
             .withZone(ZoneId.systemDefault())
 
+        @SuppressLint("StaticFieldLeak") // Singleton stores context.applicationContext only.
         @Volatile
         private var instance: BackgroundTestRecorder? = null
 

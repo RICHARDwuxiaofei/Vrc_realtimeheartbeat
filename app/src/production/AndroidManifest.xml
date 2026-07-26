@@ -2,13 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-permission
-        android:name="android.permission.WAKE_LOCK"
-        tools:node="remove" />
-
     <application>
         <activity
             android:name=".RelayTestActivity"
+            tools:ignore="WearRecents"
             tools:node="remove" />
     </application>
 

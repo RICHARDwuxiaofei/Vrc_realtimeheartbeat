@@ -71,3 +71,23 @@ def test_pulse_width_and_period_follow_bpm():
     assert sent[-1] == ("/avatar/parameters/HRPulse", False)
     engine.tick(2_000)
     assert sent[-1] == ("/avatar/parameters/HRPulse", True)
+
+
+def test_avatar_test_sends_all_parameters_and_restores_invalid_state():
+    sent = []
+    engine = BridgeEngine(lambda address, value: sent.append((address, value)))
+
+    engine.start_avatar_test(123)
+    engine.finish_avatar_test()
+
+    assert sent[:4] == [
+        ("/avatar/parameters/HR_Value", 123),
+        ("/avatar/parameters/HR_Hundreds", 1),
+        ("/avatar/parameters/HR_Tens", 2),
+        ("/avatar/parameters/HR_Ones", 3),
+    ]
+    assert ("/avatar/parameters/HRPulse", True) in sent
+    assert sent[-2:] == [
+        ("/avatar/parameters/HeartRateValid", False),
+        ("/avatar/parameters/HRValid", False),
+    ]
