@@ -1,6 +1,6 @@
 # 换机继续开发摘要
 
-更新时间：2026-07-26
+更新时间：2026-07-27
 
 > 2026-07-26 新增候选功能：小米手环标准 BLE 心率可选择 Android 手机中转，也可由 Python Windows 端直接订阅。实现、公开接口边界和真机待验项先读 [XIAOMI_BAND.md](XIAOMI_BAND.md)。代码已经过自动化测试和 Windows BLE 扫描冒烟，但尚未用 Xiaomi Smart Band 10 真机验收，不可直接标记为正式发布已验证。
 
@@ -36,16 +36,15 @@ Unity、Avatar 模型、Animator 和数字显示由用户自己维护；本仓�
 ## 2. GitHub 位置与继续开发分支
 
 - 仓库：<https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat>
-- 当前候选分支：`codex/v1.1.0-diagnostics-ready`
-- 正式 Release `v1.0.0` 仍是上一版；`v1.1.0` 当前只作为候选源码和构建产物，未创建正式 Release。
-- `main` 仍早于当前候选功能。换机后先取得上面的候选分支，不要从旧 `main` 重做。
+- 当前稳定分支：`main`
+- `codex/v1.1.0-diagnostics-ready` 已通过 PR [#5](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/pull/5) 合并。
+- 正式 Release：[`v1.1.0`](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/releases/tag/v1.1.0)，标签指向合并提交 `ed7ca9d5d9d6d83b2423527828ae468c6d9db7b0`。
 
 新电脑获取代码：
 
 ```powershell
 git clone https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat.git
 cd Vrc_realtimeheartbeat
-git switch codex/v1.1.0-diagnostics-ready
 git pull --ff-only
 ```
 
@@ -55,6 +54,8 @@ GitHub 自动构建文件在仓库的 **Actions → Build distributables → 对
 - `windows-python-heart-rate-bridge`：首选 Python EXE 与 ZIP
 
 工作流文件为 `.github/workflows/build.yml`。当前只在 `main` push、Pull Request 或手动运行时触发；仅推送开发分支后如需云端产物，可在 Actions 手动选择该分支运行，或创建 Pull Request。
+
+普通用户应从 Releases 下载长期保留的 `v1.1.0` APK、EXE、ZIP 与 `SHA256SUMS.txt`，不要把 14 天后过期的 Actions Artifact 当作正式下载地址。
 
 ## 3. 三端分别是什么
 
@@ -263,7 +264,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\WatchTestReport.
 2026-07-26 候选分支最新本地复核结果：
 
 - Python：71 项 pytest、源码入口自检、手机中转 → 电脑直连 Tk UI 切换冒烟通过。
-- Python EXE：删除 C# 并迁移图标后重新构建，打包后 `--self-test` 和 `--ble-scan-self-test` 均通过；2026-07-27 在正常 Windows 进程环境中重建的最终 SHA-256 为 `cedcec7fe4b9e97e8aeab6748ca0d6c2bace2e4ebd31b3f601136325a1ab7716`。PyInstaller onefile 必须能在 `TEMP/TMP` 下创建嵌套解包目录；受限沙箱会阻止解包并让 `--windowed` 进程看起来像自检卡住。
+- Python EXE：删除 C# 并迁移图标后重新构建，打包后 `--self-test` 和 `--ble-scan-self-test` 均通过；`v1.1.0` Release 中 EXE 的 SHA-256 为 `f663f50b4647570bec6f00f7e9e170e7ec7bb2ec430f7756310e7f8a7a90b5e5`。PyInstaller onefile 必须能在 `TEMP/TMP` 下创建嵌套解包目录；受限沙箱会阻止解包并让 `--windowed` 进程看起来像自检卡住。
 - Android：手表 diagnostic 23 项、production 21 项、手机 14 项，共 58 项单元测试，0 失败、0 error、0 skip。
 - Android Lint：三个变体均为 0 error；剩余 warning 只有“依赖存在更新版本”的提示，候选分支没有为了追新而变更运行时依赖。
 - 构建：两个 Watch APK、Phone APK、Python EXE 均成功；三套 APK 元数据均为 `versionName=1.1.0`、`versionCode=2`。

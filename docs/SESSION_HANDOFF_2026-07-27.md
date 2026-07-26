@@ -1,6 +1,6 @@
 # 2026-07-27 模拟心率与酒店网络联调交接
 
-> Windows EXE 的 `--self-test` 卡住问题已定位并完成复核，全部本地门禁已经通过，用户已确认可以提交。本次只做本地提交，尚未推送 GitHub。
+> Windows EXE 的 `--self-test` 卡住问题已定位并完成复核。全部本地与 GitHub Actions 门禁均已通过，PR #5 已合并，`v1.1.0` 正式 Release 已发布。
 
 ## 1. 用户本轮目标
 
@@ -12,11 +12,12 @@
 ## 2. 仓库与 Git 状态
 
 - 仓库：`D:\CODE\Vrc_realtimeheartbeat`
-- 当前分支：`codex/v1.1.0-diagnostics-ready`
-- 当前 HEAD：`b0512e0 Add Xiaomi heart rate paths and retire C# bridge`
-- 远端已有草稿 PR：<https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/pull/5>
-- 本轮改动未 commit、未 push。
-- 工作区有本轮预期改动；`MainActivity.kt` 从 `app/src/main` 移到 `app/src/diagnostic`，未暂存时 Git 显示为一个删除加一个未跟踪目录是正常的，暂存后应识别为移动。
+- 开发分支：`codex/v1.1.0-diagnostics-ready`
+- 分支最终提交：`d473642eebe54e9b8bf2561c196faa62c355ac89`
+- PR [#5](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/pull/5) 已合并到 `main`。
+- `main` 合并提交：`ed7ca9d5d9d6d83b2423527828ae468c6d9db7b0`
+- 正式 Release：[`v1.1.0`](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/releases/tag/v1.1.0)
+- 本轮源码、用户版 README、APK、EXE、ZIP 与校验表均已上传 GitHub。
 
 开始接手时先运行：
 
@@ -222,12 +223,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 7. 在正常 Windows 进程环境中完整重跑 `Build-Exe.ps1` 成功：71 项 pytest、源码入口自检、PyInstaller 构建和打包 EXE 自检全部通过。
 8. 对新产物额外执行 `--ble-scan-self-test`，WinRT/Bleak `0x180D` 扫描约 7.2 秒退出，退出码为 0。
 
-新产物：
+故障复核阶段产物（正式发布前又重新打包，故文件哈希不同）：
 
 ```text
 dist/windows-python/VrcRealtimeHeartbeat-Python.exe
 SHA-256: cedcec7fe4b9e97e8aeab6748ca0d6c2bace2e4ebd31b3f601136325a1ab7716
 ```
+
+`v1.1.0` Release 最终 EXE 的 SHA-256 为 `f663f50b4647570bec6f00f7e9e170e7ec7bb2ec430f7756310e7f8a7a90b5e5`。
 
 受限自动化环境运行 onefile EXE 时，必须允许它在 `TEMP/TMP` 下创建嵌套解包目录；不能把该权限错误误判为应用自检卡死。
 
@@ -294,6 +297,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 正式 Watch 编译目录无诊断版 `MainActivity`、`DiagnosticHeartRateSimulator` 或 `SimulatedHeartRateGenerator`；诊断编译目录包含这些类。
 - APK 版本均为 `1.1.0 (2)`。
 - EXE `--self-test` 在正常 Windows 进程环境中退出码为 0。
-- 新 EXE SHA-256 已写入 `docs/NEW_PC_HANDOFF.md`。
-- `git diff --check` 与最终工作区范围仍需在文档更新后再复核。
-- 用户已确认可以提交；本次只做本地提交，提交后仍不 push。
+- Release EXE SHA-256 已写入 `docs/NEW_PC_HANDOFF.md`。
+- PR 与 `main` 的 `Build distributables` 均成功；`main` run ID 为 `30213246653`。
+- `v1.1.0` Release 含手表正式功能版、手表诊断版、手机 APK、Windows EXE、Windows ZIP 与统一 `SHA256SUMS.txt`。
