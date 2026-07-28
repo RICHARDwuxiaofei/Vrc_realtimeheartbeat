@@ -26,6 +26,7 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@drawable/ic_launcher"
         android:label="${appLabel}"
+        android:localeConfig="@xml/locales_config"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.Watch6HeartRateProbe">

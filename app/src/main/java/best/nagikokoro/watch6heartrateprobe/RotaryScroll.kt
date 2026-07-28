@@ -1,8 +1,10 @@
 package best.nagikokoro.watch6heartrateprobe
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -24,7 +26,13 @@ internal fun Modifier.rotaryBezelScroll(scrollState: ScrollState): Modifier {
 
     return onRotaryScrollEvent { event ->
         coroutineScope.launch {
-            scrollState.scrollBy(event.verticalScrollPixels)
+            scrollState.animateScrollBy(
+                value = event.verticalScrollPixels,
+                animationSpec = tween(
+                    durationMillis = 140,
+                    easing = FastOutSlowInEasing,
+                ),
+            )
         }
         true
     }

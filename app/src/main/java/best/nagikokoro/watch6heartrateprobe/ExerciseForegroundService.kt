@@ -1164,10 +1164,10 @@ class ExerciseForegroundService : Service() {
         manager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL,
-                "息屏心率节能传输",
+                AppLocale.text(this, "息屏心率节能传输"),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "按所选的 1 秒实时或 5 秒省电模式传输心率"
+                description = AppLocale.text(this@ExerciseForegroundService, "按所选的 1 秒实时或 5 秒省电模式传输心率")
                 setShowBadge(false)
             },
         )
@@ -1187,10 +1187,13 @@ class ExerciseForegroundService : Service() {
         )
         return Notification.Builder(this, NOTIFICATION_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("后台心率传输运行中")
+            .setContentTitle(AppLocale.text(this, "后台心率传输运行中"))
             .setContentText(
-                bpm?.let { "$it BPM · ${store.state.value.relayMode.displayName}" }
-                    ?: "正在等待心率 · ${store.state.value.relayMode.displayName}",
+                AppLocale.text(
+                    this,
+                    bpm?.let { "$it BPM · ${store.state.value.relayMode.displayName}" }
+                        ?: "正在等待心率 · ${store.state.value.relayMode.displayName}",
+                ),
             )
             .setContentIntent(pendingIntent)
             .setOngoing(true)

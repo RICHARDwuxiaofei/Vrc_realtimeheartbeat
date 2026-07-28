@@ -28,11 +28,11 @@ android {
         create("diagnostic") {
             dimension = "edition"
             applicationIdSuffix = ".diagnostic"
-            manifestPlaceholders["appLabel"] = "心率中转站（诊断）"
+            manifestPlaceholders["appLabel"] = "@string/app_name_diagnostic"
         }
         create("production") {
             dimension = "edition"
-            manifestPlaceholders["appLabel"] = "心率中转站"
+            manifestPlaceholders["appLabel"] = "@string/app_name_production"
         }
     }
 
@@ -44,7 +44,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 kotlin {

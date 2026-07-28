@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from .input_sources import PHONE_RELAY, normalize_input_source
+from .i18n import SYSTEM, normalize_language
 
 
 @dataclass(slots=True)
@@ -16,11 +17,15 @@ class AppSettings:
     input_source: str = PHONE_RELAY
     ble_address: str = ""
     ble_name: str = ""
+    language: str = SYSTEM
+
+
+def app_data_dir() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VrcRealtimeHeartbeat"
 
 
 def settings_path() -> Path:
-    root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VrcRealtimeHeartbeat"
-    return root / "python-settings.json"
+    return app_data_dir() / "python-settings.json"
 
 
 def load_settings(path: Path | None = None) -> AppSettings:
@@ -34,6 +39,7 @@ def load_settings(path: Path | None = None) -> AppSettings:
             input_source=normalize_input_source(payload.get("input_source")),
             ble_address=_safe_text(payload.get("ble_address")),
             ble_name=_safe_text(payload.get("ble_name")),
+            language=normalize_language(payload.get("language")),
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return AppSettings()

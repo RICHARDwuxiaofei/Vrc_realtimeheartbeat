@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name_production">心拍数転送</string>
+    <string name="app_name_diagnostic">心拍数診断</string>
+</resources>

@@ -1,20 +1,23 @@
 # 2026-07-28 多端频率同步、双包共存与界面重构交接
 
+> 此文档为历史快照；最新状态请以 `docs/SESSION_HANDOFF_2026-07-29.md` 为准。
+
 > 这是当前最新交接文档。接手后必须保留工作区中的全部未提交改动；不要执行 `reset`、`checkout`、`clean` 或其他会覆盖现有文件的操作。在全部验证完成并先向用户报告之前，不要提交、推送或发布 GitHub。
 
 ## 1. 仓库与 Git 状态
 
-- 工作区：`C:\Users\wrq18\.codex\worktrees\c306\Vrc_realtimeheartbeat`
-- 分支：`codex/watch-sync-and-compat`
-- 基线提交：`0cddb47`
-- 当前存在大量未提交改动和新增文件。
-- 当前尚未创建提交、推送分支、PR 或 Release。
-- 原始主仓库仍位于 `D:\CODE\Vrc_realtimeheartbeat`；不要在两个工作区之间机械覆盖文件。
+- 当前续接工作区：`D:\CODE\Vrc_realtimeheartbeat`
+- 当前分支：`codex/watch-sync-and-compat-handoff`
+- 交接快照提交：`2f304a828f324c54d88ea247df586dd5dbb8729c`
+- 旧工作区 `C:\Users\wrq18\.codex\worktrees\c306\Vrc_realtimeheartbeat` 仍停在
+  `codex/watch-sync-and-compat` / `0cddb47`，其中原有未提交改动保持不动。
+- 不要切回旧分支，也不要在两个工作区之间机械覆盖文件。
+- 当前尚未推送分支、创建 PR 或 Release。
 
 开始接手时先运行只读检查：
 
 ```powershell
-Set-Location C:\Users\wrq18\.codex\worktrees\c306\Vrc_realtimeheartbeat
+Set-Location D:\CODE\Vrc_realtimeheartbeat
 git status --short
 git diff --check
 git diff --stat
@@ -236,9 +239,9 @@ Watch production Kotlin compile：通过
 Watch diagnostic Kotlin compile：通过
 ```
 
-### 5.2 UI/表圈最新改动之前的完整 Android 门禁
+### 5.2 UI/表圈最新改动之后的完整 Android 门禁
 
-曾完整成功执行：
+2026-07-28 在交接快照 `2f304a8` 上重新完整成功执行：
 
 ```text
 :app:testDiagnosticDebugUnitTest
@@ -265,11 +268,18 @@ Phone production：16
 合计：76，0 failure，0 error
 ```
 
-最新 UI/表圈改动后必须重新执行全部门禁，不能只引用上述旧结果。
+Gradle 最终输出：
 
-### 5.3 UI 重构之前的 Windows EXE 门禁
+```text
+BUILD SUCCESSFUL in 1m 5s
+214 actionable tasks: 6 executed, 208 up-to-date
+```
 
-曾在正常 Windows 进程环境成功执行：
+仅有已安装 Android SDK command-line tools 与 SDK XML 版本的兼容警告，不影响任务结果。
+
+### 5.3 最新 Windows UI 与 EXE 门禁
+
+2026-07-28 在正常 Windows 进程环境成功执行：
 
 ```text
 Python pytest：71 passed
@@ -279,13 +289,14 @@ PyInstaller 单文件 EXE：构建成功
 安装路径 EXE --self-test：退出码 0
 ```
 
-当时产物：
+最新产物：
 
 ```text
-SHA-256: 2bdc69a6949dc595b2485061f366bc00e18087b1c6eeeffeb6c94545ac022eec
+SHA-256: 47367106a87da1bf4137e164c5f069327692faff87d72e21b0b283cf18e81b31
 ```
 
-该 EXE 早于最新 Windows UI 重构，不是最终候选产物。
+已完成源码 UI 与安装版 UI 的截图级验收。曲线卡在首屏始终可见；鼠标位于曲线、
+来源表单和运行日志区域时均能滚动，已实际从顶部滚到底部再滚回顶部。
 
 ## 6. PyInstaller `--self-test` 沙箱注意事项
 
@@ -335,10 +346,12 @@ best.nagikokoro.watch6heartrateprobe.diagnostic
 
 两者当时均为 `1.2.0 (3)`。
 
-2026-07-28 最新交接检查时 ADB 状态变为：
+2026-07-28 最新续接检查时 ADB 状态为：
 
 ```text
-10.163.22.1:35047 offline
+adb devices -l：空
+adb mdns services：空
+adb connect 10.163.22.1:35047：连接超时 10060
 ```
 
 无线调试端口可能已经变化或连接需要重新授权。重新安装表圈版本前必须先恢复 ADB。
@@ -364,21 +377,32 @@ C:\Users\wrq18\Desktop\VRChat 心率桥.lnk
 C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.exe
 ```
 
-稳定目录中的 EXE 是 UI 重构前的 `1.2.0` 构建。不要把它当作最新 UI 已安装；必须在新版视觉验收和打包通过后覆盖。
+稳定目录已覆盖为 UI 重构后的 `1.2.0` 构建，安装路径 `--self-test` 退出码为 0。
+桌面快捷方式目标已复核无误。旧 EXE 保存在同目录：
 
-## 8. 当前构建产物不是最终候选
+```text
+C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.pre-ui-20260728.exe
+```
 
-2026-07-28 文档更新时存在以下旧产物：
+## 8. 当前构建产物
+
+2026-07-28 重新执行完整门禁后的产物：
 
 | 产物 | SHA-256 | 说明 |
 | --- | --- | --- |
-| `app-production-debug.apk` | `b17393e9057b18de1d713b608d06178ff6ff8f26e2e4ac5552237f6d39fd24da` | 早于旋转表圈改动 |
-| `app-diagnostic-debug.apk` | `0f0412a875339274fdb0c04f3fbd42b3f3ba360aeb0badb318c1f1d083203a68` | 早于旋转表圈改动 |
+| `app-production-debug.apk` | `9c1d6aace86d8f336ea1ed64ae955f43b3ff40f78a5eeaa3a58ef9e2b479f6e9` | 已含旋转表圈改动，尚未手表安装验收 |
+| `app-diagnostic-debug.apk` | `c5824829cd8256da07be7190b90dbdc9990a2c6ce331ece7242b4b937e649364` | 已含旋转表圈改动，尚未手表安装验收 |
 | `mobile-production-debug.apk` | `e0f793c9b67edd5a20553d0d7674b8532efe7de06b16eee2ed1801e0ed310a8b` | 尚未手机安装验收 |
 | `mobile-diagnostic-debug.apk` | `1134b3e60c358ad9aa3a8cfc1d088851d1b0d8d1946cedfecf56509810d93b30` | 尚未手机安装验收 |
-| `VrcRealtimeHeartbeat-Python.exe` | `2bdc69a6949dc595b2485061f366bc00e18087b1c6eeeffeb6c94545ac022eec` | 早于最新 Windows UI 重构 |
+| `VrcRealtimeHeartbeat-Python.exe` | `47367106a87da1bf4137e164c5f069327692faff87d72e21b0b283cf18e81b31` | 已安装并通过自检、截图与滚轮验收 |
 
-重新构建后必须重新计算哈希并更新本节或最终发布记录。
+四个 APK 均为 `versionName 1.2.0` / `versionCode 3`。正式版包名为
+`best.nagikokoro.watch6heartrateprobe`，诊断版包名带 `.diagnostic` 后缀。
+四包均通过 APK Signature Scheme v2 验证，调试证书 SHA-256 为：
+
+```text
+ff194f4da7e0f907865be507ad652763a43bc1be377e3dc7353462c296401696
+```
 
 ## 9. 接手后的准确执行顺序
 
@@ -404,9 +428,15 @@ C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-
 
 代码实现已覆盖用户提出的主要功能，但不能宣称完成：
 
-- Windows 新 UI 仍缺视觉与鼠标滚轮实测。
-- Watch 表圈支持仅编译通过，尚未安装和实际旋转验收。
+- Windows 新 UI 已完成源码与安装版视觉、滚轮、EXE 构建和自检。
+- Android 四变体单测、Lint、assemble 已在最新代码上通过。
+- Watch 表圈支持已进入最新 APK，但设备未连接，尚未安装和实际旋转验收。
 - 手机未连接，扫码和频率双向同步尚未真机闭环。
-- 最新 UI/表圈改动后尚未重新跑完整 Android/EXE 发布门禁。
 
-因此当前状态是“继续开发和验收”，不是“可以提交或发布”。
+因此当前阻塞点只有三端真机中的手表/手机两端。恢复 Watch6 和手机 ADB 后仍需完成：
+
+1. 手表 production/diagnostic 双包安装、共存和 Classic 表圈滚动。
+2. 手机 production/diagnostic 双包安装、竖屏扫码与中央无竖线。
+3. 手机与手表 `1 / 5 / 10 秒`频率双向同步闭环。
+
+在这些真机检查完成并先向用户报告前，不要备份/合并 main、commit、push 或发布。

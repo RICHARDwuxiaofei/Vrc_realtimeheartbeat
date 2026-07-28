@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name_production">心拍数リレー</string>
+    <string name="app_name_diagnostic">心拍数リレー（診断）</string>
+</resources>

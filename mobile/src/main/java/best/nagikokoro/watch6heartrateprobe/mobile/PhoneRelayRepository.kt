@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.edit
+import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -219,9 +220,7 @@ object PhoneRelayRepository {
         val nodeId = mutableState.value.watchNodeId
             .takeIf { mutableState.value.heartRateSource == HeartRateSource.GALAXY_WATCH }
             ?.takeUnless { it == "--" }
-        if (nodeId != null) {
-            syncRelayIntervalToWatch(context, nodeId)
-        }
+        syncRelayIntervalToWatch(context, nodeId)
     }
 
     fun setForwardingEnabled(enabled: Boolean) {
@@ -769,7 +768,7 @@ object PhoneRelayRepository {
         }
     }
 
-    private fun syncRelayIntervalToWatch(context: Context, nodeId: String) {
+    private fun syncRelayIntervalToWatch(context: Context, nodeId: String? = null) {
         val current = mutableState.value
         val payload = JSONObject()
             .put("version", 1)
@@ -779,9 +778,32 @@ object PhoneRelayRepository {
             .put("phoneEpochMillis", System.currentTimeMillis())
             .toString()
             .toByteArray(Charsets.UTF_8)
-        Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.CONTROL_PATH, payload)
+
+        fun send(targetNodeId: String) {
+            Wearable.getMessageClient(context).sendMessage(targetNodeId, RelayProtocol.CONTROL_PATH, payload)
+                .addOnFailureListener { failure ->
+                    update { it.copy(lastError = "同步手表发送频率失败：${failure.message}") }
+                }
+        }
+
+        if (nodeId != null) {
+            send(nodeId)
+            return
+        }
+
+        Wearable.getCapabilityClient(context)
+            .getCapability(RelayProtocol.WATCH_CAPABILITY, CapabilityClient.FILTER_REACHABLE)
+            .addOnSuccessListener { capability ->
+                val node = capability.nodes.firstOrNull { it.isNearby } ?: capability.nodes.firstOrNull()
+                if (node == null) {
+                    update { it.copy(lastError = "同步手表发送频率失败：未发现可达手表") }
+                    return@addOnSuccessListener
+                }
+                update { it.copy(watchNodeId = node.id, watchConnected = true, lastError = "--") }
+                send(node.id)
+            }
             .addOnFailureListener { failure ->
-                update { it.copy(lastError = "同步手表发送频率失败：${failure.message}") }
+                update { it.copy(lastError = "查找手表同步节点失败：${failure.message}") }
             }
     }
 

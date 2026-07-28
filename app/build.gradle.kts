@@ -29,14 +29,14 @@ android {
             dimension = "edition"
             applicationIdSuffix = ".diagnostic"
             manifestPlaceholders["launcherActivity"] = ".MainActivity"
-            manifestPlaceholders["appLabel"] = "心率诊断"
+            manifestPlaceholders["appLabel"] = "@string/app_name_diagnostic"
             manifestPlaceholders["taskAffinity"] = "best.nagikokoro.watch6heartrateprobe.diagnostic"
             buildConfigField("boolean", "PRODUCTION_EDITION", "false")
         }
         create("production") {
             dimension = "edition"
             manifestPlaceholders["launcherActivity"] = ".ProductionMainActivity"
-            manifestPlaceholders["appLabel"] = "心率传输"
+            manifestPlaceholders["appLabel"] = "@string/app_name_production"
             manifestPlaceholders["taskAffinity"] = "best.nagikokoro.watch6heartrateprobe"
             buildConfigField("boolean", "PRODUCTION_EDITION", "true")
         }

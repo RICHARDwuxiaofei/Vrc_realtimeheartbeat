@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name_production">Heart Rate Relay</string>
+    <string name="app_name_diagnostic">Heart Rate Relay (Diagnostics)</string>
+</resources>

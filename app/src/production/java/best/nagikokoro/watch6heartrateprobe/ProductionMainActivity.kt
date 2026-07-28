@@ -1,5 +1,6 @@
 package best.nagikokoro.watch6heartrateprobe
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
@@ -29,15 +30,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.Image
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.TextUnit
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.Text as WearText
 
 class ProductionMainActivity : ComponentActivity() {
     private val viewModel: HeartRateViewModel by viewModels()
@@ -45,6 +48,10 @@ class ProductionMainActivity : ComponentActivity() {
     private lateinit var relaySettings: WatchRelaySettings
     private var pendingStartAfterPermission = false
     private var restoreChecked = false
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
 
     private val heartRatePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -86,6 +93,7 @@ class ProductionMainActivity : ComponentActivity() {
                 onRelayModeChange = ::selectRelayMode,
                 onStart = ::requestPermissionsAndStart,
                 onStop = viewModel::stopSelectedMode,
+                onLanguageChange = { AppLocale.apply(this@ProductionMainActivity, it) },
             )
         }
     }
@@ -177,7 +185,9 @@ private fun ProductionScreen(
     onRelayModeChange: (WatchRelayMode) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onLanguageChange: (AppLanguage) -> Unit,
 ) {
+    val context = LocalContext.current
     val pageScroll = rememberScrollState()
     val exercise = state.exercise
     val running = exercise.serviceRunning && exercise.sessionState in setOf(
@@ -321,6 +331,12 @@ private fun ProductionScreen(
             fontSize = 9.sp,
             textAlign = TextAlign.Center,
         )
+        Spacer(Modifier.height(12.dp))
+        WatchLanguageSelector(
+            selected = AppLocale.selected(context),
+            onSelect = onLanguageChange,
+        )
+        Spacer(Modifier.height(28.dp))
     }
 }
 
@@ -385,4 +401,25 @@ private fun ProductionStatusRow(label: String, value: String) {
         Text(label, color = Color(0xFF828282), fontSize = 10.sp)
         Text(value, color = Color(0xFFD2D2D2), fontSize = 10.sp, fontWeight = FontWeight.Medium)
     }
+}
+
+@Composable
+private fun Text(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    fontSize: TextUnit = TextUnit.Unspecified,
+    fontWeight: FontWeight? = null,
+    textAlign: TextAlign? = null,
+    lineHeight: TextUnit = TextUnit.Unspecified,
+) {
+    WearText(
+        text = AppLocale.text(LocalContext.current, text),
+        modifier = modifier,
+        color = color,
+        fontSize = fontSize,
+        fontWeight = fontWeight,
+        textAlign = textAlign,
+        lineHeight = lineHeight,
+    )
 }

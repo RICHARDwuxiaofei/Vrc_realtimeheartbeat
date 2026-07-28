@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 from datetime import datetime
+import os
 import queue
 import socket
 import sys
@@ -9,14 +10,17 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import traceback
 from typing import Any
 import webbrowser
 
 from . import __version__
 from .analytics import HeartRateSample
+from .app_logging import AppFileLogger
 from .ble_direct import BleHeartRateClient
 from .diagnostic_csv import DiagnosticCsvStore
 from .input_sources import INPUT_SOURCE_LABELS, PHONE_RELAY, XIAOMI_PC_BLE
+from .i18n import LANGUAGES, Translator
 from .pairing import build_pairing_uri
 from .runtime import BridgeRuntime, RuntimeConfig
 from .settings import AppSettings, load_settings, save_settings
@@ -37,6 +41,413 @@ ACCENT_DARK = "#e99b93"
 GOOD = "#8bd5a3"
 WARN = "#ffc56d"
 CHART_GRID = "#302d35"
+CARD_RADIUS = 22
+CONTROL_RADIUS = 14
+
+
+class LocalizedStringVar(tk.StringVar):
+    def __init__(self, master: tk.Misc, translate: Any, value: object = "") -> None:
+        self._translate = translate
+        super().__init__(master=master, value=self._translate(value))
+
+    def set(self, value: object) -> None:
+        super().set(self._translate(value))
+
+
+def _draw_rounded_rectangle(
+    canvas: tk.Canvas,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    radius: float,
+    **options: Any,
+) -> int:
+    radius = max(0.0, min(radius, (x2 - x1) / 2, (y2 - y1) / 2))
+    points = (
+        x1 + radius, y1,
+        x2 - radius, y1,
+        x2, y1,
+        x2, y1 + radius,
+        x2, y2 - radius,
+        x2, y2,
+        x2 - radius, y2,
+        x1 + radius, y2,
+        x1, y2,
+        x1, y2 - radius,
+        x1, y1 + radius,
+        x1, y1,
+    )
+    return canvas.create_polygon(points, smooth=True, splinesteps=36, **options)
+
+
+class RoundedCard(tk.Canvas):
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        fill: str = PANEL,
+        radius: int = CARD_RADIUS,
+        inset: int = 10,
+    ) -> None:
+        parent_bg = str(parent.cget("bg"))
+        super().__init__(
+            parent,
+            bg=parent_bg,
+            highlightthickness=0,
+            borderwidth=0,
+            height=80,
+        )
+        self.fill = fill
+        self.radius = radius
+        self.inset = inset
+        self.body = tk.Frame(self, bg=fill)
+        self._body_window = self.create_window((inset, inset), window=self.body, anchor="nw")
+        super().bind("<Configure>", self._on_resize)
+        self.body.bind("<Configure>", self._on_body_resize, add="+")
+
+    def _on_resize(self, event: tk.Event) -> None:
+        width = max(1, int(event.width))
+        height = max(1, int(event.height))
+        self.delete("rounded-background")
+        _draw_rounded_rectangle(
+            self,
+            1,
+            1,
+            width - 1,
+            height - 1,
+            self.radius,
+            fill=self.fill,
+            outline="",
+            tags="rounded-background",
+        )
+        self.tag_lower("rounded-background")
+        self.itemconfigure(self._body_window, width=max(1, width - self.inset * 2))
+
+    def _on_body_resize(self, _event: tk.Event) -> None:
+        requested = self.body.winfo_reqheight() + self.inset * 2
+        if requested > 0 and int(float(self.cget("height"))) != requested:
+            tk.Canvas.configure(self, height=requested)
+
+
+class RoundedButton(tk.Canvas):
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        text: str = "",
+        textvariable: tk.StringVar | None = None,
+        command: Any = None,
+        variant: str = "secondary",
+        state: str = "normal",
+        width: int = 144,
+        height: int = 44,
+    ) -> None:
+        parent_bg = str(parent.cget("bg"))
+        super().__init__(
+            parent,
+            bg=parent_bg,
+            highlightthickness=0,
+            borderwidth=0,
+            width=width,
+            height=height,
+            takefocus=1,
+        )
+        self._text = text
+        self._textvariable = textvariable
+        self._command = command
+        self._variant = variant
+        self._state = state
+        self._hovered = False
+        if textvariable is not None:
+            textvariable.trace_add("write", lambda *_args: self._draw())
+        super().bind("<Configure>", lambda _event: self._draw())
+        super().bind("<Enter>", self._enter)
+        super().bind("<Leave>", self._leave)
+        super().bind("<Button-1>", self._click)
+        super().bind("<Return>", self._click)
+        super().bind("<space>", self._click)
+        self._draw()
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        if cnf:
+            kwargs.update(cnf)
+        handled = False
+        for name in ("state", "text", "command"):
+            if name in kwargs:
+                value = kwargs.pop(name)
+                setattr(self, f"_{name}", value)
+                handled = True
+        result = tk.Canvas.configure(self, **kwargs) if kwargs else None
+        if handled:
+            self._draw()
+        return result
+
+    config = configure
+
+    def _enter(self, _event: tk.Event) -> None:
+        self._hovered = True
+        self._draw()
+
+    def _leave(self, _event: tk.Event) -> None:
+        self._hovered = False
+        self._draw()
+
+    def _click(self, _event: tk.Event) -> str:
+        if self._state != "disabled" and self._command is not None:
+            self._command()
+        return "break"
+
+    def _draw(self) -> None:
+        if not self.winfo_exists():
+            return
+        width = max(self.winfo_width(), int(float(self.cget("width"))))
+        height = max(self.winfo_height(), int(float(self.cget("height"))))
+        disabled = self._state == "disabled"
+        if self._variant == "primary":
+            fill = "#5d5667" if disabled else PRIMARY_DARK if self._hovered else PRIMARY
+            foreground = "#a49daa" if disabled else "#281b3e"
+        else:
+            fill = "#18171b" if disabled else "#34313a" if self._hovered else FIELD
+            foreground = "#68636d" if disabled else TEXT
+        self.delete("all")
+        _draw_rounded_rectangle(
+            self,
+            1,
+            1,
+            width - 1,
+            height - 1,
+            CONTROL_RADIUS,
+            fill=fill,
+            outline="",
+        )
+        label = self._textvariable.get() if self._textvariable is not None else self._text
+        self.create_text(
+            width / 2,
+            height / 2,
+            text=label,
+            fill=foreground,
+            font=("Microsoft YaHei UI", 9, "bold" if self._variant == "primary" else "normal"),
+        )
+        self.configure(cursor="arrow" if disabled else "hand2")
+
+
+class RoundedEntry(tk.Canvas):
+    def __init__(self, parent: tk.Widget, *, textvariable: tk.StringVar, width: int = 132) -> None:
+        parent_bg = str(parent.cget("bg"))
+        super().__init__(
+            parent,
+            bg=parent_bg,
+            highlightthickness=0,
+            borderwidth=0,
+            width=width,
+            height=44,
+        )
+        self._focused = False
+        self.entry = tk.Entry(
+            self,
+            textvariable=textvariable,
+            relief="flat",
+            borderwidth=0,
+            bg=FIELD,
+            fg=TEXT,
+            insertbackground=TEXT,
+            disabledbackground=FIELD,
+            disabledforeground="#68636d",
+            selectbackground=PRIMARY_DARK,
+            selectforeground="#281b3e",
+            font=("Microsoft YaHei UI", 9),
+        )
+        self._window = self.create_window(12, 22, window=self.entry, anchor="w")
+        super().bind("<Configure>", self._on_resize)
+        self.entry.bind("<FocusIn>", self._focus_in)
+        self.entry.bind("<FocusOut>", self._focus_out)
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        if cnf:
+            kwargs.update(cnf)
+        state = kwargs.pop("state", None)
+        if state is not None:
+            self.entry.configure(state=state)
+        return tk.Canvas.configure(self, **kwargs) if kwargs else None
+
+    config = configure
+
+    def _focus_in(self, _event: tk.Event) -> None:
+        self._focused = True
+        self._draw_border()
+
+    def _focus_out(self, _event: tk.Event) -> None:
+        self._focused = False
+        self._draw_border()
+
+    def _on_resize(self, event: tk.Event) -> None:
+        self.coords(self._window, 12, event.height / 2)
+        self.itemconfigure(self._window, width=max(24, event.width - 24), height=25)
+        self._draw_border()
+
+    def _draw_border(self) -> None:
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+        self.delete("rounded-field")
+        _draw_rounded_rectangle(
+            self,
+            1,
+            1,
+            width - 1,
+            height - 1,
+            CONTROL_RADIUS,
+            fill=FIELD,
+            outline=PRIMARY if self._focused else BORDER,
+            width=1,
+            tags="rounded-field",
+        )
+        self.tag_lower("rounded-field")
+
+
+class RoundedCombobox(tk.Canvas):
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        textvariable: tk.StringVar,
+        values: list[str] | tuple[str, ...] = (),
+        state: str = "readonly",
+        width: int = 240,
+    ) -> None:
+        parent_bg = str(parent.cget("bg"))
+        super().__init__(
+            parent,
+            bg=parent_bg,
+            highlightthickness=0,
+            borderwidth=0,
+            width=width,
+            height=44,
+        )
+        self.combo = ttk.Combobox(
+            self,
+            textvariable=textvariable,
+            values=values,
+            state=state,
+            style="Rounded.TCombobox",
+        )
+        self._window = self.create_window(10, 22, window=self.combo, anchor="w")
+        super().bind("<Configure>", self._on_resize)
+        self.combo.bind("<FocusIn>", lambda _event: self._draw_border(True))
+        self.combo.bind("<FocusOut>", lambda _event: self._draw_border(False))
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        if cnf:
+            kwargs.update(cnf)
+        combo_options = {}
+        for name in ("state", "values"):
+            if name in kwargs:
+                combo_options[name] = kwargs.pop(name)
+        if combo_options:
+            self.combo.configure(**combo_options)
+        return tk.Canvas.configure(self, **kwargs) if kwargs else None
+
+    config = configure
+
+    def bind(self, sequence: str | None = None, func: Any = None, add: Any = None) -> Any:
+        if sequence and sequence.startswith("<<"):
+            return self.combo.bind(sequence, func, add)
+        return tk.Canvas.bind(self, sequence, func, add)
+
+    def _on_resize(self, event: tk.Event) -> None:
+        self.coords(self._window, 10, event.height / 2)
+        self.itemconfigure(self._window, width=max(24, event.width - 20), height=28)
+        self._draw_border(False)
+
+    def _draw_border(self, focused: bool) -> None:
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+        self.delete("rounded-field")
+        _draw_rounded_rectangle(
+            self,
+            1,
+            1,
+            width - 1,
+            height - 1,
+            CONTROL_RADIUS,
+            fill=FIELD,
+            outline=PRIMARY if focused else BORDER,
+            width=1,
+            tags="rounded-field",
+        )
+        self.tag_lower("rounded-field")
+
+
+class PillToggle(tk.Canvas):
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        text: str,
+        variable: tk.BooleanVar,
+        command: Any = None,
+        width: int = 250,
+    ) -> None:
+        parent_bg = str(parent.cget("bg"))
+        super().__init__(
+            parent,
+            bg=parent_bg,
+            highlightthickness=0,
+            borderwidth=0,
+            width=width,
+            height=42,
+            cursor="hand2",
+            takefocus=1,
+        )
+        self._text = text
+        self._variable = variable
+        self._command = command
+        variable.trace_add("write", lambda *_args: self._draw())
+        super().bind("<Configure>", lambda _event: self._draw())
+        super().bind("<Button-1>", self._toggle)
+        super().bind("<Return>", self._toggle)
+        super().bind("<space>", self._toggle)
+        self._draw()
+
+    def _toggle(self, _event: tk.Event) -> str:
+        self._variable.set(not self._variable.get())
+        if self._command is not None:
+            self._command()
+        return "break"
+
+    def _draw(self) -> None:
+        width = max(self.winfo_width(), int(float(self.cget("width"))))
+        enabled = self._variable.get()
+        self.delete("all")
+        _draw_rounded_rectangle(
+            self,
+            1,
+            7,
+            51,
+            35,
+            14,
+            fill=PRIMARY if enabled else FIELD,
+            outline=PRIMARY if enabled else BORDER,
+            width=1,
+        )
+        knob_x = 37 if enabled else 15
+        self.create_oval(
+            knob_x - 9,
+            12,
+            knob_x + 9,
+            30,
+            fill="#281b3e" if enabled else MUTED,
+            outline="",
+        )
+        self.create_text(
+            64,
+            21,
+            text=self._text,
+            anchor="w",
+            fill=TEXT,
+            font=("Microsoft YaHei UI", 9),
+            width=max(40, width - 68),
+        )
 
 
 def enable_dpi_awareness() -> None:
@@ -58,6 +469,18 @@ class HeartRateBridgeApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.settings = load_settings()
+        self.translator = Translator(self.settings.language)
+        self.tr = self.translator.text
+        self.restart_requested = False
+        self.input_source_labels = {
+            key: self.tr(label)
+            for key, label in INPUT_SOURCE_LABELS.items()
+        }
+        self.language_options = self.translator.language_options()
+        self.language_codes_by_label = {
+            label: code
+            for code, label in self.language_options.items()
+        }
         self.runtime: BridgeRuntime | None = None
         self.events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
         self.ble_client = BleHeartRateClient(self._enqueue_event)
@@ -66,6 +489,7 @@ class HeartRateBridgeApp:
         self.ble_scanning = False
         self.packet_count = 0
         self.diagnostic_csv = DiagnosticCsvStore()
+        self.app_log = AppFileLogger()
         self.diagnostic_session_started = False
         self.latest_release_url = ""
         self._qr_photo: Any = None
@@ -73,43 +497,52 @@ class HeartRateBridgeApp:
         self.listen_port = tk.StringVar(value=str(self.settings.listen_port))
         self.osc_port = tk.StringVar(value=str(self.settings.osc_port))
         self.forward_osc = tk.BooleanVar(value=self.settings.forward_osc)
-        self.input_source_label = tk.StringVar(value=INPUT_SOURCE_LABELS[self.settings.input_source])
+        self.input_source_label = tk.StringVar(value=self.input_source_labels[self.settings.input_source])
+        self.language_choice = tk.StringVar(value=self.language_options[self.settings.language])
         saved_ble_label = (
-            f"{self.settings.ble_name or '已保存设备'} · {self.settings.ble_address}"
+            f"{self.settings.ble_name or self.tr('已保存设备')} · {self.settings.ble_address}"
             if self.settings.ble_address
             else ""
         )
         self.ble_device_choice = tk.StringVar(value=saved_ble_label)
-        self.ble_status_text = tk.StringVar(value="直连模式未启用")
+        self.ble_status_text = self._localized_var("直连模式未启用")
         self.diagnostic_mode = tk.BooleanVar(value=False)
-        self.diagnostic_toggle_text = tk.StringVar(value="开始曲线记录")
+        self.diagnostic_toggle_text = self._localized_var("开始曲线记录")
         self.chart_minutes = tk.IntVar(value=1)
         self.bpm_text = tk.StringVar(value="--")
-        self.signal_text = tk.StringVar(
+        self.signal_text = self._localized_var(
             value="等待手机数据" if self.settings.input_source == PHONE_RELAY else "等待小米手环 BLE"
         )
-        self.detail_text = tk.StringVar(value="尚未收到数据包")
-        self.receiver_text = tk.StringVar(value="未启动")
-        self.phone_text = tk.StringVar(value="--")
-        self.osc_text = tk.StringVar(value="已开启" if self.settings.forward_osc else "已关闭")
+        self.detail_text = self._localized_var("尚未收到数据包")
+        self.receiver_text = self._localized_var("未启动")
+        self.phone_text = self._localized_var("--")
+        self.osc_text = self._localized_var("已开启" if self.settings.forward_osc else "已关闭")
         self.minimum_text = tk.StringVar(value="--")
         self.maximum_text = tk.StringVar(value="--")
         self.average_text = tk.StringVar(value="--")
-        self.csv_text = tk.StringVar(value="点击右上角开始记录")
-        self.chart_title = tk.StringVar(value="最近 1 分钟心率曲线")
-        self.update_text = tk.StringVar(value="正在检查 GitHub…")
+        self.csv_text = self._localized_var("点击右上角开始记录")
+        self.chart_title = self._localized_var("最近 1 分钟心率曲线")
+        self.update_text = self._localized_var("正在检查 GitHub…")
+        self.log_path_text = self._localized_var(f"自动日志 · {self.app_log.path}")
 
         self._configure_window()
         self._configure_styles()
         self._build_ui()
+        self._localize_widget_tree(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.report_callback_exception = self._report_callback_exception
+        self._append_log(f"应用启动 · v{__version__}")
+        self._append_log(f"日志文件：{self.app_log.path}")
         self.root.after(50, self._poll_events)
         self.root.after(250, self.start_receiver)
         self.root.after(1_000, self._refresh_chart)
         self.root.after(1_200, self.check_for_updates)
 
+    def _localized_var(self, value: object) -> LocalizedStringVar:
+        return LocalizedStringVar(self.root, self.tr, value)
+
     def _configure_window(self) -> None:
-        self.root.title("VRChat 心率桥 · Python")
+        self.root.title(self.tr("VRChat 心率桥 · Python"))
         self.root.geometry("1120x820")
         self.root.minsize(900, 640)
         self.root.configure(background=BG)
@@ -133,7 +566,7 @@ class HeartRateBridgeApp:
         )
         style.map("TEntry", bordercolor=[("focus", PRIMARY)])
         style.configure(
-            "TCombobox",
+            "Rounded.TCombobox",
             fieldbackground=FIELD,
             background=FIELD,
             foreground=TEXT,
@@ -141,10 +574,12 @@ class HeartRateBridgeApp:
             bordercolor=FIELD,
             lightcolor=FIELD,
             darkcolor=FIELD,
-            padding=8,
+            borderwidth=0,
+            relief="flat",
+            padding=5,
         )
         style.map(
-            "TCombobox",
+            "Rounded.TCombobox",
             fieldbackground=[("readonly", FIELD)],
             foreground=[("readonly", TEXT)],
             selectbackground=[("readonly", FIELD)],
@@ -195,14 +630,30 @@ class HeartRateBridgeApp:
 
     def _build_ui(self) -> None:
         header = tk.Frame(self.root, bg=BG)
-        header.pack(fill="x", padx=28, pady=(20, 14))
-        brand = tk.Frame(header, bg=PANEL_ELEVATED, width=48, height=48)
-        brand.pack(side="left")
-        brand.pack_propagate(False)
-        tk.Label(brand, text="♥", bg=PANEL_ELEVATED, fg=ACCENT, font=("Segoe UI Symbol", 23, "bold")).pack(
-            expand=True,
+        header.pack(fill="x", padx=28, pady=(16, 10))
+        brand_row = tk.Frame(header, bg=BG)
+        brand_row.pack(fill="x")
+        brand = tk.Canvas(
+            brand_row,
+            bg=BG,
+            width=48,
+            height=48,
+            highlightthickness=0,
+            borderwidth=0,
         )
-        title_block = tk.Frame(header, bg=BG)
+        brand.pack(side="left")
+        _draw_rounded_rectangle(
+            brand,
+            0,
+            0,
+            48,
+            48,
+            16,
+            fill=PANEL_ELEVATED,
+            outline="",
+        )
+        brand.create_text(24, 25, text="♥", fill=ACCENT, font=("Segoe UI Symbol", 23, "bold"))
+        title_block = tk.Frame(brand_row, bg=BG)
         title_block.pack(side="left", padx=(13, 0))
         tk.Label(
             title_block,
@@ -218,19 +669,6 @@ class HeartRateBridgeApp:
             fg=MUTED,
             font=("Microsoft YaHei UI", 8, "bold"),
         ).pack(anchor="w", pady=(3, 0))
-        update_button = ttk.Button(
-            header,
-            textvariable=self.update_text,
-            style="Secondary.TButton",
-            command=self._open_or_check_update,
-        )
-        update_button.pack(side="right", anchor="e", pady=(3, 0))
-        ttk.Button(
-            header,
-            textvariable=self.diagnostic_toggle_text,
-            style="Primary.TButton",
-            command=self.toggle_diagnostic_view,
-        ).pack(side="right", anchor="e", padx=(0, 10), pady=(3, 0))
 
         viewport = tk.Frame(self.root, bg=BG)
         viewport.pack(fill="both", expand=True)
@@ -255,8 +693,9 @@ class HeartRateBridgeApp:
         content = tk.Frame(outer, bg=BG)
         content.pack(fill="both", expand=True, padx=28, pady=(0, 28))
 
-        summary = tk.Frame(content, bg=PANEL_ELEVATED)
-        summary.pack(fill="x")
+        summary_card = RoundedCard(content, fill=PANEL_ELEVATED)
+        summary_card.pack(fill="x")
+        summary = summary_card.body
         tk.Frame(summary, bg=ACCENT, width=5).pack(side="left", fill="y")
         bpm_column = tk.Frame(summary, bg=PANEL_ELEVATED)
         bpm_column.pack(side="left", fill="both", expand=True, padx=24, pady=19)
@@ -306,7 +745,10 @@ class HeartRateBridgeApp:
         self._stat_value(stats_row, "最高", self.maximum_text, 1)
         self._stat_value(stats_row, "平均", self.average_text, 2)
 
-        self.status_column = tk.Frame(summary, bg=PANEL, width=255)
+        # English status labels and values are materially wider than Chinese.
+        # Keep enough room for e.g. "Input engine" + "Listening on 9123"
+        # without letting the two packed labels overlap.
+        self.status_column = tk.Frame(summary, bg=PANEL, width=325)
         self.status_column.pack(side="right", fill="y", padx=(0, 1), pady=1)
         self.status_column.pack_propagate(False)
         tk.Label(self.status_column, text="链路状态", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
@@ -316,15 +758,32 @@ class HeartRateBridgeApp:
         self._status_row(self.status_column, "输入设备", self.phone_text)
         self._status_row(self.status_column, "VRChat OSC", self.osc_text)
 
-        self.chart_panel = tk.Frame(content, bg=PANEL)
-        self.chart_panel.pack(fill="x", pady=(14, 0))
+        chart_card = RoundedCard(content, fill=PANEL)
+        chart_card.pack(fill="x", pady=(14, 0))
+        self.chart_panel = chart_card.body
         chart_header = tk.Frame(self.chart_panel, bg=PANEL)
         chart_header.pack(fill="x", padx=20, pady=(17, 3))
         tk.Label(
             chart_header, textvariable=self.chart_title, bg=PANEL, fg=TEXT,
             font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(side="left")
-        tk.Label(chart_header, textvariable=self.csv_text, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="right")
+        RoundedButton(
+            chart_header,
+            textvariable=self.diagnostic_toggle_text,
+            variant="primary",
+            command=self.toggle_diagnostic_view,
+            width=210,
+            height=38,
+        ).pack(side="right")
+        tk.Label(
+            self.chart_panel,
+            textvariable=self.csv_text,
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+            justify="right",
+            wraplength=520,
+        ).pack(anchor="e", padx=20, pady=(0, 2))
         slider_row = tk.Frame(self.chart_panel, bg=PANEL)
         slider_row.pack(fill="x", padx=20)
         tk.Label(slider_row, text="显示范围", bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
@@ -347,8 +806,9 @@ class HeartRateBridgeApp:
         self.chart.pack(fill="x", padx=20, pady=(5, 18))
         self.chart.bind("<Configure>", lambda _event: self._draw_chart())
 
-        self.source_panel = tk.Frame(content, bg=PANEL)
-        self.source_panel.pack(fill="x", pady=(14, 0))
+        source_card = RoundedCard(content, fill=PANEL)
+        source_card.pack(fill="x", pady=(14, 0))
+        self.source_panel = source_card.body
         tk.Label(
             self.source_panel,
             text="心率来源",
@@ -363,37 +823,39 @@ class HeartRateBridgeApp:
             fg=MUTED,
             font=("Microsoft YaHei UI", 8),
         ).grid(row=1, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 12))
-        self.source_combo = ttk.Combobox(
+        self.source_combo = RoundedCombobox(
             self.source_panel,
             textvariable=self.input_source_label,
-            values=list(INPUT_SOURCE_LABELS.values()),
+            values=list(self.input_source_labels.values()),
             state="readonly",
-            width=28,
+            width=230,
         )
         self.source_combo.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 10))
         self.source_combo.bind("<<ComboboxSelected>>", self._change_input_source)
-        self.ble_device_combo = ttk.Combobox(
+        self.ble_device_combo = RoundedCombobox(
             self.source_panel,
             textvariable=self.ble_device_choice,
             state="disabled",
-            width=34,
+            width=270,
         )
         self.ble_device_combo.grid(row=2, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 10))
         self.ble_device_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_source_controls())
-        self.ble_scan_button = ttk.Button(
+        self.ble_scan_button = RoundedButton(
             self.source_panel,
             text="扫描",
-            style="Secondary.TButton",
+            variant="secondary",
             command=self.scan_ble_devices,
             state="disabled",
+            width=108,
         )
         self.ble_scan_button.grid(row=2, column=4, sticky="ew", padx=6, pady=(0, 10))
-        self.ble_connect_button = ttk.Button(
+        self.ble_connect_button = RoundedButton(
             self.source_panel,
             text="连接",
-            style="Primary.TButton",
+            variant="primary",
             command=self.connect_selected_ble_device,
             state="disabled",
+            width=108,
         )
         self.ble_connect_button.grid(row=2, column=5, sticky="ew", padx=(6, 20), pady=(0, 10))
         tk.Label(
@@ -403,65 +865,123 @@ class HeartRateBridgeApp:
             fg=MUTED,
             font=("Microsoft YaHei UI", 8),
         ).grid(row=3, column=0, columnspan=4, sticky="w", padx=20, pady=(0, 16))
-        self.ble_disconnect_button = ttk.Button(
+        self.ble_disconnect_button = RoundedButton(
             self.source_panel,
             text="断开 BLE",
-            style="Secondary.TButton",
+            variant="secondary",
             command=self.disconnect_ble_device,
             state="disabled",
+            width=150,
         )
         self.ble_disconnect_button.grid(row=3, column=4, columnspan=2, sticky="e", padx=(6, 20), pady=(0, 16))
         for column in range(6):
             self.source_panel.grid_columnconfigure(column, weight=1)
 
-        self.settings_panel = tk.Frame(content, bg=PANEL)
-        self.settings_panel.pack(fill="x", pady=(14, 0))
+        settings_card = RoundedCard(content, fill=PANEL)
+        settings_card.pack(fill="x", pady=(14, 0))
+        self.settings_panel = settings_card.body
         settings_panel = self.settings_panel
         tk.Label(settings_panel, text="连接与工具", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(
-            row=0, column=0, columnspan=8, sticky="w", padx=20, pady=(17, 10),
+            row=0, column=0, columnspan=6, sticky="w", padx=20, pady=(17, 10),
         )
         self._entry_field(settings_panel, 1, 0, "手机 UDP 端口", self.listen_port)
         self._entry_field(settings_panel, 1, 2, "VRChat OSC 端口", self.osc_port)
-        ttk.Checkbutton(
+        PillToggle(
             settings_panel, text="发送到 VRChat OSC", variable=self.forward_osc, command=self._update_osc_label,
-        ).grid(row=1, column=4, columnspan=2, sticky="w", padx=12, pady=(0, 12))
-        ttk.Checkbutton(
+        ).grid(row=1, column=4, columnspan=2, sticky="w", padx=(12, 20), pady=(0, 12))
+        PillToggle(
             settings_panel, text="记录曲线与统计（诊断模式）",
-            variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode,
-        ).grid(row=1, column=6, columnspan=2, sticky="w", padx=(8, 20), pady=(0, 12))
+            variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode, width=520,
+        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=20, pady=(2, 14))
 
-        self.start_button = ttk.Button(settings_panel, text="启动接收", style="Primary.TButton", command=self.start_receiver)
-        self.start_button.grid(row=2, column=0, sticky="ew", padx=(20, 4), pady=(0, 18))
-        self.stop_button = ttk.Button(
-            settings_panel, text="停止", style="Secondary.TButton", command=self.stop_receiver, state="disabled",
+        self.start_button = RoundedButton(
+            settings_panel,
+            text="启动接收",
+            variant="primary",
+            command=self.start_receiver,
+            width=180,
         )
-        self.stop_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(0, 18))
-        self.avatar_test_button = ttk.Button(
-            settings_panel, text="Avatar 参数测试", style="Secondary.TButton", command=self.send_avatar_test,
+        self.start_button.grid(row=3, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 14))
+        self.stop_button = RoundedButton(
+            settings_panel,
+            text="停止",
+            variant="secondary",
+            command=self.stop_receiver,
             state="disabled",
+            width=180,
         )
-        self.avatar_test_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=4, pady=(0, 18))
-        self.qr_button = ttk.Button(
-            settings_panel, text="显示配对二维码", style="Secondary.TButton", command=self.show_pairing_qr,
+        self.stop_button.grid(row=3, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 14))
+        self.qr_button = RoundedButton(
+            settings_panel,
+            text="显示配对二维码",
+            variant="secondary",
+            command=self.show_pairing_qr,
+            width=220,
         )
-        self.qr_button.grid(row=2, column=4, columnspan=2, sticky="ew", padx=4, pady=(0, 18))
-        self.diagnostic_button = ttk.Button(
-            settings_panel, text="一键诊断", style="Secondary.TButton", command=self.run_diagnostics,
+        self.qr_button.grid(row=3, column=4, columnspan=2, sticky="ew", padx=(6, 20), pady=(0, 14))
+        tk.Label(
+            settings_panel,
+            text="高级工具",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8, "bold"),
+        ).grid(row=4, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 7))
+        self.avatar_test_button = RoundedButton(
+            settings_panel,
+            text="Avatar 参数测试",
+            variant="secondary",
+            command=self.send_avatar_test,
             state="disabled",
+            width=220,
         )
-        self.diagnostic_button.grid(row=2, column=6, sticky="ew", padx=4, pady=(0, 18))
-        self.export_button = ttk.Button(
-            settings_panel, text="导出 CSV…", style="Secondary.TButton", command=self.export_csv,
+        self.avatar_test_button.grid(row=5, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 18))
+        self.diagnostic_button = RoundedButton(
+            settings_panel,
+            text="一键诊断",
+            variant="secondary",
+            command=self.run_diagnostics,
             state="disabled",
+            width=180,
         )
-        self.export_button.grid(row=2, column=7, sticky="ew", padx=(4, 20), pady=(0, 18))
-        for column in range(8):
+        self.diagnostic_button.grid(row=5, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 18))
+        self.export_button = RoundedButton(
+            settings_panel,
+            text="导出 CSV…",
+            variant="secondary",
+            command=self.export_csv,
+            state="disabled",
+            width=180,
+        )
+        self.export_button.grid(row=5, column=4, columnspan=2, sticky="ew", padx=(6, 20), pady=(0, 18))
+        for column in range(6):
             settings_panel.grid_columnconfigure(column, weight=1)
 
-        log_panel = tk.Frame(content, bg=PANEL)
-        log_panel.pack(fill="both", expand=True, pady=(14, 0))
-        tk.Label(log_panel, text="运行记录", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).pack(
-            anchor="w", padx=20, pady=(17, 8),
+        log_card = RoundedCard(content, fill=PANEL)
+        log_card.pack(fill="both", expand=True, pady=(14, 0))
+        log_panel = log_card.body
+        log_header = tk.Frame(log_panel, bg=PANEL)
+        log_header.pack(fill="x", padx=20, pady=(14, 2))
+        tk.Label(log_header, text="运行记录", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).pack(
+            side="left",
+        )
+        RoundedButton(
+            log_header,
+            text="打开日志文件夹",
+            variant="secondary",
+            command=self._open_log_folder,
+            width=154,
+            height=38,
+        ).pack(side="right")
+        tk.Label(
+            log_panel,
+            textvariable=self.log_path_text,
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(
+            anchor="w",
+            padx=20,
+            pady=(0, 8),
         )
         self.log = tk.Text(
             log_panel, height=6, wrap="word", relief="flat", borderwidth=0,
@@ -469,6 +989,53 @@ class HeartRateBridgeApp:
             font=("Cascadia Mono", 9), padx=14, pady=12, state="disabled",
         )
         self.log.pack(fill="both", expand=True, padx=20, pady=(0, 18))
+
+        preferences_card = RoundedCard(content, fill=PANEL)
+        preferences_card.pack(fill="x", pady=(14, 0))
+        preferences_panel = preferences_card.body
+        tk.Label(
+            preferences_panel,
+            text="偏好设置",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 12, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=(17, 12))
+        language_block = tk.Frame(preferences_panel, bg=PANEL)
+        language_block.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(20, 10), pady=(0, 18))
+        tk.Label(
+            language_block,
+            text="语言",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.language_combo = RoundedCombobox(
+            language_block,
+            textvariable=self.language_choice,
+            values=list(self.language_options.values()),
+            state="readonly",
+            width=230,
+        )
+        self.language_combo.pack(fill="x", pady=(3, 0))
+        self.language_combo.bind("<<ComboboxSelected>>", self._change_language)
+        update_block = tk.Frame(preferences_panel, bg=PANEL)
+        update_block.grid(row=1, column=2, columnspan=2, sticky="ew", padx=(10, 20), pady=(0, 18))
+        tk.Label(
+            update_block,
+            text="版本与更新",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        RoundedButton(
+            update_block,
+            textvariable=self.update_text,
+            variant="secondary",
+            command=self._open_or_check_update,
+            width=260,
+        ).pack(fill="x", pady=(3, 0))
+        for column in range(4):
+            preferences_panel.grid_columnconfigure(column, weight=1)
         self._refresh_source_controls()
 
     def _on_content_configure(self, _event: tk.Event) -> None:
@@ -506,17 +1073,69 @@ class HeartRateBridgeApp:
         field = tk.Frame(parent, bg=PANEL)
         field.grid(row=row, column=column, columnspan=2, sticky="ew", padx=(20 if column == 0 else 8, 4), pady=(0, 10))
         tk.Label(field, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w")
-        entry = ttk.Entry(field, textvariable=variable, width=12)
+        entry = RoundedEntry(field, textvariable=variable, width=132)
         entry.pack(fill="x", pady=(3, 0))
         if variable is self.listen_port:
             self.listen_port_entry = entry
         elif variable is self.osc_port:
             self.osc_port_entry = entry
 
+    def _localize_widget_tree(self, widget: tk.Misc) -> None:
+        if isinstance(widget, RoundedButton) and widget._textvariable is None:
+            widget.configure(text=self.tr(widget._text))
+        elif isinstance(widget, PillToggle):
+            widget._text = self.tr(widget._text)
+            widget._draw()
+        elif isinstance(widget, (tk.Label, tk.Button, tk.Checkbutton)):
+            try:
+                current = widget.cget("text")
+                if current:
+                    widget.configure(text=self.tr(current))
+            except tk.TclError:
+                pass
+        for child in widget.winfo_children():
+            self._localize_widget_tree(child)
+
+    def _change_language(self, _event: tk.Event | None = None) -> None:
+        language = self.language_codes_by_label.get(self.language_choice.get())
+        if language is None or language == self.settings.language:
+            return
+        previous_language = self.settings.language
+        if self.diagnostic_csv.has_unexported_rows:
+            proceed = messagebox.askyesno(
+                self.tr("尚有未导出的 CSV 数据"),
+                self.tr(
+                    f"还有 {self.diagnostic_csv.row_count - self.diagnostic_csv.exported_row_count} 条记录未导出。\n"
+                    "切换语言会重新载入界面，确定继续吗？"
+                ),
+            )
+            if not proceed:
+                self.language_choice.set(self.language_options[self.settings.language])
+                return
+        self.settings.language = language
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self.settings.language = previous_language
+            self._show_error("语言", f"保存设置失败：{exc}")
+            self.language_choice.set(self.language_options[self.settings.language])
+            return
+        self.restart_requested = True
+        self._shutdown()
+
+    def _show_info(self, title: str, message: object) -> Any:
+        return messagebox.showinfo(self.tr(title), self.tr(message))
+
+    def _show_warning(self, title: str, message: object) -> Any:
+        return messagebox.showwarning(self.tr(title), self.tr(message))
+
+    def _show_error(self, title: str, message: object) -> Any:
+        return messagebox.showerror(self.tr(title), self.tr(message))
+
     def _selected_input_source(self) -> str:
         selected = self.input_source_label.get()
         return next(
-            (key for key, label in INPUT_SOURCE_LABELS.items() if label == selected),
+            (key for key, label in self.input_source_labels.items() if label == selected),
             PHONE_RELAY,
         )
 
@@ -568,7 +1187,7 @@ class HeartRateBridgeApp:
         if self._selected_input_source() != XIAOMI_PC_BLE:
             return
         if self.runtime is None or not self.runtime.running:
-            messagebox.showinfo("扫描小米手环", "请先启动接收器。")
+            self._show_info("扫描小米手环", "请先启动接收器。")
             return
         self.ble_scan_button.configure(state="disabled")
         self.ble_status_text.set("正在扫描标准心率设备…")
@@ -577,7 +1196,7 @@ class HeartRateBridgeApp:
     def connect_selected_ble_device(self) -> None:
         selected = self.ble_devices.get(self.ble_device_choice.get())
         if selected is None:
-            messagebox.showinfo("连接小米手环", "请先扫描并选择一个心率设备。")
+            self._show_info("连接小米手环", "请先扫描并选择一个心率设备。")
             return
         address, name = selected
         self.ble_client.connect(address, name)
@@ -603,6 +1222,7 @@ class HeartRateBridgeApp:
                 input_source=input_source,
                 ble_address=self.settings.ble_address,
                 ble_name=self.settings.ble_name,
+                language=self.settings.language,
             )
             save_settings(settings)
             self.settings = settings
@@ -663,10 +1283,10 @@ class HeartRateBridgeApp:
     def send_avatar_test(self) -> None:
         runtime = self.runtime
         if runtime is None or not runtime.running:
-            messagebox.showwarning("Avatar 参数测试", "请先启动接收器。")
+            self._show_warning("Avatar 参数测试", "请先启动接收器。")
             return
         if not self.forward_osc.get():
-            messagebox.showwarning("Avatar 参数测试", "请先开启“发送到 VRChat OSC”。")
+            self._show_warning("Avatar 参数测试", "请先开启“发送到 VRChat OSC”。")
             return
         if runtime.send_avatar_test(123):
             self._append_log("已发送 Avatar 参数测试：123 BPM + HRValid + HRPulse")
@@ -676,7 +1296,7 @@ class HeartRateBridgeApp:
     def show_pairing_qr(self) -> None:
         addresses = local_ipv4_addresses()
         if not addresses or addresses == ["--"]:
-            messagebox.showerror("配对二维码", "没有找到可用的本机局域网 IPv4。")
+            self._show_error("配对二维码", "没有找到可用的本机局域网 IPv4。")
             return
         try:
             port = parse_port(self.listen_port.get())
@@ -687,26 +1307,26 @@ class HeartRateBridgeApp:
             image = qrcode.make(uri).resize((300, 300))
             self._qr_photo = ImageTk.PhotoImage(image)
         except ImportError:
-            messagebox.showerror("配对二维码", "二维码组件未安装，请重新安装或使用最新版 EXE。")
+            self._show_error("配对二维码", "二维码组件未安装，请重新安装或使用最新版 EXE。")
             return
         except ValueError as exc:
-            messagebox.showerror("配对二维码", str(exc))
+            self._show_error("配对二维码", str(exc))
             return
 
         popup = tk.Toplevel(self.root)
-        popup.title("手机扫码配对")
+        popup.title(self.tr("手机扫码配对"))
         popup.configure(bg=PANEL)
         popup.resizable(False, False)
         tk.Label(popup, image=self._qr_photo, bg=PANEL).pack(padx=24, pady=(22, 8))
         tk.Label(popup, text=f"{addresses[0]}:{port}", bg=PANEL, fg=TEXT, font=("Segoe UI", 13, "bold")).pack()
         tk.Label(
-            popup, text="在手机端点击“扫码配对”，识别后会自动保存电脑地址。",
+            popup, text=self.tr("在手机端点击“扫码配对”，识别后会自动保存电脑地址。"),
             bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9),
         ).pack(padx=24, pady=(7, 20))
 
     def run_diagnostics(self) -> None:
         if not self.diagnostic_mode.get():
-            messagebox.showinfo("一键诊断", "请先开启诊断模式。")
+            self._show_info("一键诊断", "请先开启诊断模式。")
             return
         runtime = self.runtime
         direct = self._selected_input_source() == XIAOMI_PC_BLE
@@ -734,7 +1354,7 @@ class HeartRateBridgeApp:
         else:
             result = "请先启动接收器，再连接当前选择的心率来源。"
         self._append_log("电脑诊断：" + "；".join(lines))
-        messagebox.showinfo("一键诊断", result + "\n\n" + "\n".join(lines))
+        self._show_info("一键诊断", result + "\n\n" + "\n".join(lines))
 
     def toggle_diagnostic_view(self) -> None:
         self.diagnostic_mode.set(not self.diagnostic_mode.get())
@@ -752,7 +1372,7 @@ class HeartRateBridgeApp:
                     self.diagnostic_session_started = True
             except OSError as exc:
                 self.diagnostic_mode.set(False)
-                messagebox.showerror("诊断模式", f"无法创建诊断 CSV：{exc}")
+                self._show_error("诊断模式", f"无法创建诊断 CSV：{exc}")
                 return
             self.avatar_test_button.configure(state="normal")
             self.diagnostic_button.configure(state="normal")
@@ -771,13 +1391,13 @@ class HeartRateBridgeApp:
 
     def export_csv(self) -> None:
         if self.diagnostic_csv.row_count == 0:
-            messagebox.showinfo("导出 CSV", "还没有诊断数据。请先开启诊断模式。")
+            self._show_info("导出 CSV", "还没有诊断数据。请先开启诊断模式。")
             return
         filename = filedialog.asksaveasfilename(
-            title="导出心率 CSV",
+            title=self.tr("导出心率 CSV"),
             defaultextension=".csv",
             initialfile=f"heart-rate-{datetime.now():%Y%m%d-%H%M%S}.csv",
-            filetypes=[("CSV 文件", "*.csv")],
+            filetypes=[(self.tr("CSV 文件"), "*.csv")],
         )
         if not filename:
             return
@@ -786,9 +1406,9 @@ class HeartRateBridgeApp:
 
             self.diagnostic_csv.export(Path(filename))
             self._append_log(f"CSV 已手动导出：{filename}")
-            messagebox.showinfo("导出 CSV", f"已导出 {self.diagnostic_csv.row_count} 条数据。")
+            self._show_info("导出 CSV", f"已导出 {self.diagnostic_csv.row_count} 条数据。")
         except OSError as exc:
-            messagebox.showerror("导出 CSV", f"写入失败：{exc}")
+            self._show_error("导出 CSV", f"写入失败：{exc}")
 
     def _change_chart_minutes(self, value: str) -> None:
         minutes = max(1, min(10, int(float(value))))
@@ -1002,14 +1622,20 @@ class HeartRateBridgeApp:
             canvas.create_line(left, y, right, y, fill=CHART_GRID)
         minutes = self.chart_minutes.get()
         canvas.create_text(
-            left, bottom + 13, text=f"-{minutes} 分钟", anchor="w",
+            left, bottom + 13, text=self.tr(f"-{minutes} 分钟"), anchor="w",
             fill=MUTED, font=("Microsoft YaHei UI", 7),
         )
-        canvas.create_text(right, bottom + 13, text="现在", anchor="e", fill=MUTED, font=("Microsoft YaHei UI", 7))
+        canvas.create_text(right, bottom + 13, text=self.tr("现在"), anchor="e", fill=MUTED, font=("Microsoft YaHei UI", 7))
         if samples is None:
             samples = self.diagnostic_csv.read_window(int(time.time() * 1_000), minutes)
         if not samples:
-            canvas.create_text(width / 2, height / 2, text="等待真实心率数据", fill=MUTED, font=("Microsoft YaHei UI", 10))
+            canvas.create_text(
+                width / 2,
+                height / 2,
+                text=self.tr("等待真实心率数据"),
+                fill=MUTED,
+                font=("Microsoft YaHei UI", 10),
+            )
             return
         values = [item.bpm for item in samples]
         low = max(30, min(values) - 10)
@@ -1043,28 +1669,62 @@ class HeartRateBridgeApp:
             self._append_log(f"保存设置失败：{exc}")
 
     def _append_log(self, line: str) -> None:
+        localized = self.tr(line)
+        self.app_log.info(localized)
+        self.log_path_text.set(f"自动日志 · {self.app_log.path}")
         self.log.configure(state="normal")
-        self.log.insert("end", f"{datetime.now():%H:%M:%S}  {line}\n")
+        self.log.insert("end", f"{datetime.now():%H:%M:%S}  {localized}\n")
         lines = int(self.log.index("end-1c").split(".")[0])
         if lines > 220:
             self.log.delete("1.0", f"{lines - 180}.0")
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _open_log_folder(self) -> None:
+        try:
+            self.app_log.directory.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(self.app_log.directory)  # type: ignore[attr-defined]
+            else:
+                raise OSError("仅 Windows 支持直接打开日志文件夹")
+            self._append_log(f"已打开日志文件夹：{self.app_log.directory}")
+        except OSError as exc:
+            self._append_log(f"打开日志文件夹失败：{exc}")
+            self._show_error("无法打开日志文件夹", str(exc))
+
+    def _report_callback_exception(
+        self,
+        exception_type: type[BaseException],
+        exception: BaseException,
+        exception_traceback: Any,
+    ) -> None:
+        stack = "".join(traceback.format_exception(exception_type, exception, exception_traceback))
+        self.app_log.error(self.tr("Tk 回调异常\n") + stack)
+        try:
+            self._append_log(f"界面操作异常：{exception}")
+        except tk.TclError:
+            pass
+
     def close(self) -> None:
         if self.diagnostic_csv.has_unexported_rows:
             should_close = messagebox.askyesno(
-                "尚有未导出的 CSV 数据",
-                f"还有 {self.diagnostic_csv.row_count - self.diagnostic_csv.exported_row_count} 条记录未导出。\n"
-                "程序不会自动导出到用户文件，确定直接退出吗？",
+                self.tr("尚有未导出的 CSV 数据"),
+                self.tr(
+                    f"还有 {self.diagnostic_csv.row_count - self.diagnostic_csv.exported_row_count} 条记录未导出。\n"
+                    "程序不会自动导出到用户文件，确定直接退出吗？"
+                ),
             )
             if not should_close:
                 return
+        self._shutdown()
+
+    def _shutdown(self) -> None:
         self.diagnostic_csv.stop()
         self.ble_client.stop()
         runtime, self.runtime = self.runtime, None
         if runtime is not None:
             runtime.stop()
+        self.app_log.info(self.tr("应用退出"))
         self.root.destroy()
 
 
@@ -1101,6 +1761,9 @@ def _resource_path(name: str) -> str:
 
 def main() -> None:
     enable_dpi_awareness()
-    root = tk.Tk()
-    HeartRateBridgeApp(root)
-    root.mainloop()
+    while True:
+        root = tk.Tk()
+        app = HeartRateBridgeApp(root)
+        root.mainloop()
+        if not app.restart_requested:
+            break

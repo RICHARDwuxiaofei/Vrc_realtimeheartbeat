@@ -31,18 +31,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.TextUnit
 import androidx.core.net.toUri
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.ambient.AmbientLifecycleObserver
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.MaterialTheme
-import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.Text as WearText
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -56,6 +58,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var diagnosticSimulator: DiagnosticHeartRateSimulator
     private var pendingStartAfterPermission = false
     private var restoreChecked = false
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
 
     private val heartRatePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -158,6 +164,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onStopBackgroundTest = viewModel::stopBackgroundTest,
                     onViewBackgroundTestResult = viewModel::viewBackgroundTestResult,
+                    onLanguageChange = { AppLocale.apply(this@MainActivity, it) },
                 )
             }
         }
@@ -278,7 +285,9 @@ private fun HeartRateProbeScreen(
     onStartBackgroundTest: (BackgroundTestType) -> Unit,
     onStopBackgroundTest: () -> Unit,
     onViewBackgroundTestResult: () -> Unit,
+    onLanguageChange: (AppLanguage) -> Unit,
 ) {
+    val context = LocalContext.current
     val pageScroll = rememberScrollState()
     val logScroll = rememberScrollState()
     val recentLogs = state.visibleLogs.takeLast(20)
@@ -518,6 +527,11 @@ private fun HeartRateProbeScreen(
                 recentLogs.forEach { entry -> DiagnosticLogLine(entry) }
             }
         }
+        Spacer(Modifier.height(12.dp))
+        WatchLanguageSelector(
+            selected = AppLocale.selected(context),
+            onSelect = onLanguageChange,
+        )
         Spacer(Modifier.height(36.dp))
     }
 }
@@ -720,3 +734,24 @@ private val LOG_TIME_FORMATTER: DateTimeFormatter =
 
 private val DATE_TIME_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+
+@Composable
+private fun Text(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    fontSize: TextUnit = TextUnit.Unspecified,
+    fontWeight: FontWeight? = null,
+    textAlign: TextAlign? = null,
+    lineHeight: TextUnit = TextUnit.Unspecified,
+) {
+    WearText(
+        text = AppLocale.text(LocalContext.current, text),
+        modifier = modifier,
+        color = color,
+        fontSize = fontSize,
+        fontWeight = fontWeight,
+        textAlign = textAlign,
+        lineHeight = lineHeight,
+    )
+}

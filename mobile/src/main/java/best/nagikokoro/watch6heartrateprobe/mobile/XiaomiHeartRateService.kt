@@ -375,10 +375,10 @@ class XiaomiHeartRateService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL,
-            "小米手环心率连接",
+            AppLocale.text(this, "小米手环心率连接"),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "仅在小米手环模式开启时保持 BLE 心率连接"
+            description = AppLocale.text(this@XiaomiHeartRateService, "仅在小米手环模式开启时保持 BLE 心率连接")
             setShowBadge(false)
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -386,8 +386,8 @@ class XiaomiHeartRateService : Service() {
 
     private fun buildNotification(text: String) = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)
         .setSmallIcon(R.drawable.ic_launcher)
-        .setContentTitle("VRChat 心率桥 · 小米手环")
-        .setContentText(text)
+        .setContentTitle(AppLocale.text(this, "VRChat 心率桥 · 小米手环"))
+        .setContentText(AppLocale.text(this, text))
         .setOnlyAlertOnce(true)
         .setOngoing(true)
         .setPriority(NotificationCompat.PRIORITY_LOW)

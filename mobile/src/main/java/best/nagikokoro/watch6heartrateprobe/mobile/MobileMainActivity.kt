@@ -38,7 +38,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
@@ -59,8 +59,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.TextUnit
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
+import best.nagikokoro.watch6heartrateprobe.BuildConfig
 import best.nagikokoro.watch6heartrateprobe.R
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -79,10 +81,18 @@ private val Muted = Color(0xFFCAC4D0)
 private val Outline = Color(0xFF49454F)
 
 class MobileMainActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PhoneRelayRepository.initialize(this)
-        setContent { RelayApp() }
+        setContent {
+            RelayApp(
+                onLanguageChange = { AppLocale.apply(this@MobileMainActivity, it) },
+            )
+        }
     }
 
     override fun onResume() {
@@ -95,7 +105,7 @@ class MobileMainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun RelayApp() {
+private fun RelayApp(onLanguageChange: (AppLanguage) -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = AccentBlue,
@@ -110,12 +120,12 @@ private fun RelayApp() {
             onSurface = Color(0xFFE6E1E5),
             onSurfaceVariant = Muted,
         ),
-    ) { RelayScreen() }
+    ) { RelayScreen(onLanguageChange) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RelayScreen() {
+private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
     val context = LocalContext.current
     val state by PhoneRelayRepository.state.collectAsStateWithLifecycle()
     var ip by remember(state.targetIp) { mutableStateOf(state.targetIp) }
@@ -185,6 +195,10 @@ private fun RelayScreen() {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             HeartRateHero(state, now, watchAlive)
+            LanguageCard(
+                selected = AppLocale.selected(context),
+                onSelect = onLanguageChange,
+            )
             HeartRateSourceCard(
                 state = state,
                 onSwitchToXiaomi = {
@@ -280,7 +294,7 @@ private fun RelayScreen() {
                             scanLauncher.launch(
                                 ScanOptions()
                                     .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                    .setPrompt("扫描电脑端显示的配对二维码")
+                                    .setPrompt(AppLocale.text(context, "扫描电脑端显示的配对二维码"))
                                     .setBeepEnabled(false)
                                     .setCaptureActivity(PortraitCaptureActivity::class.java)
                                     .setOrientationLocked(true),
@@ -384,7 +398,55 @@ private fun RelayScreen() {
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
             )
+            Spacer(Modifier.height(12.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "${context.applicationInfo.loadLabel(context.packageManager)} · " +
+                        "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                    color = Muted.copy(alpha = 0.72f),
+                    fontSize = 11.sp,
+                )
+            }
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun LanguageCard(
+    selected: AppLanguage,
+    onSelect: (AppLanguage) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CardBackground),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("语言", fontWeight = FontWeight.Bold)
+            listOf(
+                listOf(AppLanguage.SYSTEM to "跟随系统", AppLanguage.CHINESE to "简体中文"),
+                listOf(AppLanguage.ENGLISH to "English", AppLanguage.JAPANESE to "日本語"),
+            ).forEach { languages ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    languages.forEach { (language, label) ->
+                        FilterChip(
+                            selected = selected == language,
+                            onClick = { onSelect(language) },
+                            label = { Text(label) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -633,6 +695,27 @@ private fun AlertCard(text: String, background: Color, foreground: Color) {
     Card(colors = CardDefaults.cardColors(containerColor = background), shape = RoundedCornerShape(16.dp)) {
         Text(text, Modifier.padding(15.dp), color = foreground, fontSize = 13.sp)
     }
+}
+
+@Composable
+private fun Text(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    fontSize: TextUnit = TextUnit.Unspecified,
+    fontWeight: FontWeight? = null,
+    letterSpacing: TextUnit = TextUnit.Unspecified,
+    lineHeight: TextUnit = TextUnit.Unspecified,
+) {
+    MaterialText(
+        text = AppLocale.text(LocalContext.current, text),
+        modifier = modifier,
+        color = color,
+        fontSize = fontSize,
+        fontWeight = fontWeight,
+        letterSpacing = letterSpacing,
+        lineHeight = lineHeight,
+    )
 }
 
 private fun saveTarget(ip: String, port: String) {

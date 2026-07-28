@@ -420,10 +420,11 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             abnormal = abnormal,
             endingNoCallback = endingNoCallback,
         )
+        val localizedReportText = AppLocale.text(context, report.second)
         val jsonFile = File(testsDir, "${current.sessionId}.json")
         val textFile = File(testsDir, "${current.sessionId}.txt")
         jsonFile.writeText(report.first.toString(2))
-        textFile.writeText(report.second)
+        textFile.writeText(localizedReportText)
         val finalState = current.copy(
             state = when {
                 abnormal -> BackgroundTestState.ABNORMAL_TERMINATION
@@ -435,7 +436,7 @@ class BackgroundTestRecorder private constructor(private val context: Context) {
             longestNoCallbackDurationMs = maxOf(current.longestNoCallbackDurationMs, endingNoCallback),
             latestReportJsonPath = jsonFile.absolutePath,
             latestReportTextPath = textFile.absolutePath,
-            latestReportText = report.second,
+            latestReportText = localizedReportText,
             warning = report.first.optJSONArray("warnings")?.let { warnings ->
                 (0 until warnings.length()).joinToString("; ") { warnings.optString(it) }
             }?.ifBlank { "--" } ?: "--",
