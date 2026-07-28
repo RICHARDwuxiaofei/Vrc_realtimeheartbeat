@@ -282,7 +282,8 @@ private fun RelayScreen() {
                                     .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                                     .setPrompt("扫描电脑端显示的配对二维码")
                                     .setBeepEnabled(false)
-                                    .setOrientationLocked(false),
+                                    .setCaptureActivity(PortraitCaptureActivity::class.java)
+                                    .setOrientationLocked(true),
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -569,9 +570,9 @@ private fun TransferControlCard(
                     fontSize = 12.sp,
                 )
             }
-            Text("手机 → 电脑发送间隔", color = Muted, fontSize = 12.sp)
+            Text("手表与手机同步发送间隔", color = Muted, fontSize = 12.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                listOf(1, 2, 5, 10, 30).forEach { seconds ->
+                listOf(1, 5, 10).forEach { seconds ->
                     FilterChip(
                         selected = intervalSeconds == seconds,
                         onClick = { PhoneRelayRepository.setForwardIntervalSeconds(seconds) },
@@ -580,6 +581,11 @@ private fun TransferControlCard(
                     )
                 }
             }
+            Text(
+                "在手机或手表任意一端选择，另一端会自动同步；运行中也可切换。",
+                color = Muted,
+                fontSize = 11.sp,
+            )
             Button(
                 onClick = { PhoneRelayRepository.setForwardingEnabled(!enabled) },
                 modifier = Modifier.fillMaxWidth().height(48.dp),

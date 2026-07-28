@@ -14,6 +14,7 @@ object RelaySamplePayload {
         batteryPercent: Int,
         screenInteractive: Boolean,
         relayMode: WatchRelayMode,
+        relayIntervalUpdatedEpochMillis: Long,
         watchAckRequested: Boolean,
         messageType: String,
         diagnosticMode: Boolean,
@@ -26,6 +27,7 @@ object RelaySamplePayload {
             .put("sampleEpochMillis", sampleEpochMillis)
             .put("bpm", bpm)
             .put("watchRelayIntervalSeconds", relayMode.intervalSeconds)
+            .put("watchRelayIntervalUpdatedEpochMillis", relayIntervalUpdatedEpochMillis)
             .put("watchAckRequested", watchAckRequested)
         if (simulated) {
             payload

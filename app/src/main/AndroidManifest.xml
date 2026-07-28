@@ -49,7 +49,7 @@
         <activity
             android:name="${launcherActivity}"
             android:exported="true"
-            android:taskAffinity="best.nagikokoro.watch6heartrateprobe"
+            android:taskAffinity="${taskAffinity}"
             android:theme="@style/Theme.Watch6HeartRateProbe">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

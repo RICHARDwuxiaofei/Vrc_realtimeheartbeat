@@ -45,16 +45,37 @@ class WatchRelaySettings private constructor(context: Context) {
         WatchRelayMode.fromStoredValue(preferences.getString(KEY_MODE, null)),
     )
     val mode: StateFlow<WatchRelayMode> = mutableMode.asStateFlow()
+    var updatedEpochMillis: Long = preferences.getLong(KEY_UPDATED_EPOCH_MILLIS, 0L)
+        private set
 
     @Synchronized
     fun setMode(mode: WatchRelayMode) {
-        preferences.edit { putString(KEY_MODE, mode.name) }
+        applyMode(mode, System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun applyRemoteMode(mode: WatchRelayMode, remoteUpdatedEpochMillis: Long): Boolean {
+        if (remoteUpdatedEpochMillis < updatedEpochMillis) return false
+        if (remoteUpdatedEpochMillis == updatedEpochMillis && mode == mutableMode.value) return false
+        applyMode(mode, remoteUpdatedEpochMillis)
+        return true
+    }
+
+    @Synchronized
+    private fun applyMode(mode: WatchRelayMode, timestamp: Long) {
+        val safeTimestamp = timestamp.coerceAtLeast(0L)
+        preferences.edit {
+            putString(KEY_MODE, mode.name)
+            putLong(KEY_UPDATED_EPOCH_MILLIS, safeTimestamp)
+        }
         mutableMode.value = mode
+        updatedEpochMillis = safeTimestamp
     }
 
     companion object {
         private const val PREFS = "watch_relay_settings"
         private const val KEY_MODE = "relayMode"
+        private const val KEY_UPDATED_EPOCH_MILLIS = "relayModeUpdatedEpochMillis"
 
         @Volatile
         private var instance: WatchRelaySettings? = null

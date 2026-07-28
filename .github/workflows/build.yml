@@ -47,13 +47,16 @@ jobs:
           ./gradlew
           :app:testDiagnosticDebugUnitTest
           :app:testProductionDebugUnitTest
-          :mobile:testDebugUnitTest
+          :mobile:testDiagnosticDebugUnitTest
+          :mobile:testProductionDebugUnitTest
           :app:assembleDiagnosticDebug
           :app:assembleProductionDebug
-          :mobile:assembleDebug
+          :mobile:assembleDiagnosticDebug
+          :mobile:assembleProductionDebug
           :app:lintDiagnosticDebug
           :app:lintProductionDebug
-          :mobile:lintDebug
+          :mobile:lintDiagnosticDebug
+          :mobile:lintProductionDebug
           --no-daemon
 
       - name: Prepare Android downloads
@@ -62,7 +65,8 @@ jobs:
           mkdir -p dist/android
           cp app/build/outputs/apk/diagnostic/debug/app-diagnostic-debug.apk dist/android/Vrc_realtimeheartbeat-watch-diagnostic.apk
           cp app/build/outputs/apk/production/debug/app-production-debug.apk dist/android/Vrc_realtimeheartbeat-watch-production.apk
-          cp mobile/build/outputs/apk/debug/mobile-debug.apk dist/android/Vrc_realtimeheartbeat-phone-debug.apk
+          cp mobile/build/outputs/apk/diagnostic/debug/mobile-diagnostic-debug.apk dist/android/Vrc_realtimeheartbeat-phone-diagnostic.apk
+          cp mobile/build/outputs/apk/production/debug/mobile-production-debug.apk dist/android/Vrc_realtimeheartbeat-phone-production.apk
           cd dist/android
           sha256sum *.apk > SHA256SUMS.txt
 

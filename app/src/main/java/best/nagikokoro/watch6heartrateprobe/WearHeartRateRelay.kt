@@ -10,8 +10,9 @@ class WearHeartRateRelay(
     context: Context,
     private val logger: DiagnosticLogger,
 ) {
-    private val capabilityClient = Wearable.getCapabilityClient(context.applicationContext)
-    private val messageClient = Wearable.getMessageClient(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val capabilityClient = Wearable.getCapabilityClient(appContext)
+    private val messageClient = Wearable.getMessageClient(appContext)
     private val resolving = AtomicBoolean(false)
     private var cachedNode: Node? = null
     private var nextResolveAllowedMillis = 0L
@@ -183,6 +184,7 @@ class WearHeartRateRelay(
         batteryPercent = batteryPercent,
         screenInteractive = screenInteractive,
         relayMode = relayMode,
+        relayIntervalUpdatedEpochMillis = WatchRelaySettings.get(appContext).updatedEpochMillis,
         watchAckRequested = watchAckRequested,
         messageType = messageType,
         diagnosticMode = RelayDiagnosticModeStore.enabled,

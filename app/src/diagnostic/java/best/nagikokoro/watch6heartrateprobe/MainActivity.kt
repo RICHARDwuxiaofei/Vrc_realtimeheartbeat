@@ -310,6 +310,7 @@ private fun HeartRateProbeScreen(
             .fillMaxSize()
             .background(Color(0xFF08101F))
             .verticalScroll(pageScroll)
+            .rotaryBezelScroll(pageScroll)
             .padding(horizontal = 26.dp, vertical = 22.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

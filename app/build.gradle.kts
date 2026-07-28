@@ -19,22 +19,25 @@ android {
         applicationId = "best.nagikokoro.watch6heartrateprobe"
         minSdk = 30
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     flavorDimensions += "edition"
     productFlavors {
         create("diagnostic") {
             dimension = "edition"
+            applicationIdSuffix = ".diagnostic"
             manifestPlaceholders["launcherActivity"] = ".MainActivity"
-            manifestPlaceholders["appLabel"] = "Watch6 心率测试"
+            manifestPlaceholders["appLabel"] = "心率诊断"
+            manifestPlaceholders["taskAffinity"] = "best.nagikokoro.watch6heartrateprobe.diagnostic"
             buildConfigField("boolean", "PRODUCTION_EDITION", "false")
         }
         create("production") {
             dimension = "edition"
             manifestPlaceholders["launcherActivity"] = ".ProductionMainActivity"
             manifestPlaceholders["appLabel"] = "心率传输"
+            manifestPlaceholders["taskAffinity"] = "best.nagikokoro.watch6heartrateprobe"
             buildConfigField("boolean", "PRODUCTION_EDITION", "true")
         }
     }

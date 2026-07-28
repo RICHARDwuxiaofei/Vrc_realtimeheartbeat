@@ -354,6 +354,7 @@ class ExerciseForegroundService : Service() {
         when (intent?.action) {
             ACTION_STOP -> requestEnd(intent.getStringExtra(EXTRA_REASON) ?: "USER")
             ACTION_START -> startOrRestore(explicitStart = true)
+            ACTION_UPDATE_RELAY_MODE -> applyUpdatedRelayMode()
             else -> startOrRestore(explicitStart = false)
         }
         return START_STICKY
@@ -811,6 +812,67 @@ class ExerciseForegroundService : Service() {
     }
 
     /** Applies either the user-selected real-time path or the low-power Health Services path. */
+    @SuppressLint("RestrictedApi")
+    private fun applyUpdatedRelayMode() {
+        val nextMode = relaySettings.mode.value
+        if (nextMode == activeRelayMode && store.state.value.relayMode == nextMode) return
+        serviceScope.launch {
+            try {
+                val sessionActive = store.state.value.sessionState in setOf(
+                    ExerciseSessionState.ACTIVE,
+                    ExerciseSessionState.PAUSED,
+                )
+                if (sessionActive) {
+                    val supported = exerciseClient.getCapabilities().supportedBatchingModeOverrides
+                    val batchingModes = if (
+                        nextMode != WatchRelayMode.REALTIME_1_SECOND &&
+                        BatchingMode.HEART_RATE_5_SECONDS in supported
+                    ) {
+                        setOf(BatchingMode.HEART_RATE_5_SECONDS)
+                    } else {
+                        emptySet()
+                    }
+                    exerciseClient.overrideBatchingModesForActiveExercise(batchingModes)
+                }
+                val previousMode = activeRelayMode
+                activeRelayMode = nextMode
+                lastRelayedSampleEpochMillis = 0L
+                lastRelayedBpm = null
+                directLastRelayedSampleEpochMillis = 0L
+                directLastRelayedBpm = null
+                store.update { it.copy(relayMode = nextMode) }
+                updateRealtimeRelayMode()
+                if (android.os.Build.VERSION.SDK_INT >= 34) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        buildNotification(store.state.value.bpm),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH,
+                    )
+                } else {
+                    startForeground(NOTIFICATION_ID, buildNotification(store.state.value.bpm))
+                }
+                logger.info(
+                    "RELAY_MODE_UPDATED",
+                    "Relay mode changed without restarting the exercise",
+                    serviceFields("RELAY_MODE_UPDATE") + mapOf(
+                        "previousMode" to previousMode.name,
+                        "relayMode" to nextMode.name,
+                        "relayIntervalSeconds" to nextMode.intervalSeconds,
+                    ),
+                )
+            } catch (failure: Throwable) {
+                logger.error(
+                    "RELAY_MODE_UPDATE_FAILED",
+                    "Failed to apply the synchronized relay mode",
+                    failure,
+                    serviceFields("RELAY_MODE_UPDATE_FAILURE") + mapOf("requestedMode" to nextMode.name),
+                )
+                store.update { it.copy(lastError = "切换发送频率失败: ${failure.message}") }
+            }
+        }
+    }
+
+    /** Applies either the user-selected real-time path or the low-power Health Services path. */
     private fun updateRealtimeRelayMode() {
         val test = backgroundTestRecorder.state.value
         val highPowerDiagnostic = !BuildConfig.PRODUCTION_EDITION && test.isActive && runCatching {
@@ -1140,6 +1202,8 @@ class ExerciseForegroundService : Service() {
     companion object {
         private const val ACTION_START = "best.nagikokoro.watch6heartrateprobe.action.START_EXERCISE"
         private const val ACTION_STOP = "best.nagikokoro.watch6heartrateprobe.action.STOP_EXERCISE"
+        private const val ACTION_UPDATE_RELAY_MODE =
+            "best.nagikokoro.watch6heartrateprobe.action.UPDATE_RELAY_MODE"
         private const val EXTRA_REASON = "reason"
         private const val NOTIFICATION_CHANNEL = "exercise_hr_probe"
         private const val NOTIFICATION_ID = 6001
@@ -1170,6 +1234,12 @@ class ExerciseForegroundService : Service() {
             val intent = Intent(context, ExerciseForegroundService::class.java)
                 .setAction(ACTION_STOP)
                 .putExtra(EXTRA_REASON, reason)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun requestRelayModeUpdate(context: Context) {
+            val intent = Intent(context, ExerciseForegroundService::class.java)
+                .setAction(ACTION_UPDATE_RELAY_MODE)
             ContextCompat.startForegroundService(context, intent)
         }
     }

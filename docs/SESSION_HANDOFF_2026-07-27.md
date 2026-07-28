@@ -1,5 +1,7 @@
 # 2026-07-27 模拟心率与酒店网络联调交接
 
+> 最新未提交开发状态请先阅读 [`SESSION_HANDOFF_2026-07-28.md`](SESSION_HANDOFF_2026-07-28.md)。本文件保留 `v1.1.0` 发布与 7 月 27 日联调历史。
+
 > Windows EXE 的 `--self-test` 卡住问题已定位并完成复核。全部本地与 GitHub Actions 门禁均已通过，PR #5 已合并，`v1.1.0` 正式 Release 已发布。
 
 ## 1. 用户本轮目标

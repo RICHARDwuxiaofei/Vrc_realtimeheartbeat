@@ -14,8 +14,11 @@ class PhoneRelayListenerService : WearableListenerService() {
         if (PhoneRelayRepository.isDiagnosticMode()) {
             Log.i(TAG, "Data Layer message path=${event.path} source=${event.sourceNodeId} bytes=${event.data.size}")
         }
-        if (event.path == RelayProtocol.SAMPLE_PATH) {
-            PhoneRelayRepository.handleWatchSample(event.sourceNodeId, event.data)
+        when (event.path) {
+            RelayProtocol.SAMPLE_PATH ->
+                PhoneRelayRepository.handleWatchSample(event.sourceNodeId, event.data)
+            RelayProtocol.CONTROL_PATH ->
+                PhoneRelayRepository.handleWatchControl(event.sourceNodeId, event.data)
         }
     }
 

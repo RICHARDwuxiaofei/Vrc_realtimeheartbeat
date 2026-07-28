@@ -19,8 +19,21 @@ android {
         applicationId = "best.nagikokoro.watch6heartrateprobe"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
+    }
+
+    flavorDimensions += "edition"
+    productFlavors {
+        create("diagnostic") {
+            dimension = "edition"
+            applicationIdSuffix = ".diagnostic"
+            manifestPlaceholders["appLabel"] = "心率中转站（诊断）"
+        }
+        create("production") {
+            dimension = "edition"
+            manifestPlaceholders["appLabel"] = "心率中转站"
+        }
     }
 
     buildTypes {

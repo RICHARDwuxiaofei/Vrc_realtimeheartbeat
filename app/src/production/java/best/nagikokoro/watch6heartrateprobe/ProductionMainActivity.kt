@@ -83,7 +83,7 @@ class ProductionMainActivity : ComponentActivity() {
                 state = state,
                 relayStatus = relayStatus,
                 selectedRelayMode = selectedRelayMode,
-                onRelayModeChange = relaySettings::setMode,
+                onRelayModeChange = ::selectRelayMode,
                 onStart = ::requestPermissionsAndStart,
                 onStop = viewModel::stopSelectedMode,
             )
@@ -93,6 +93,14 @@ class ProductionMainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         viewModel.onActivityLifecycle("START_PRODUCTION")
+    }
+
+    private fun selectRelayMode(mode: WatchRelayMode) {
+        relaySettings.setMode(mode)
+        if (ExerciseSessionStore.get(this).state.value.serviceRunning) {
+            ExerciseForegroundService.requestRelayModeUpdate(this)
+        }
+        WatchRelayFrequencySync.sendCurrent(this)
     }
 
     override fun onResume() {
@@ -170,6 +178,7 @@ private fun ProductionScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
+    val pageScroll = rememberScrollState()
     val exercise = state.exercise
     val running = exercise.serviceRunning && exercise.sessionState in setOf(
         ExerciseSessionState.RESTORING,
@@ -203,7 +212,8 @@ private fun ProductionScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF050505))
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(pageScroll)
+            .rotaryBezelScroll(pageScroll)
             .padding(horizontal = 30.dp, vertical = 22.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -256,7 +266,7 @@ private fun ProductionScreen(
         Spacer(Modifier.height(12.dp))
         RelayModeSelector(
             selectedMode = displayedRelayMode,
-            enabled = !running,
+            enabled = true,
             onModeChange = onRelayModeChange,
         )
 
@@ -354,7 +364,7 @@ private fun RelayModeSelector(
                 }
             }
             Text(
-                if (enabled) selectedMode.description else "运行中不可切换，请先停止传输",
+                "${selectedMode.description}；选择后会自动同步到手机",
                 color = if (selectedMode == WatchRelayMode.REALTIME_1_SECOND) Color(0xFFE7A84B) else Color(0xFF858585),
                 fontSize = 8.sp,
                 lineHeight = 11.sp,

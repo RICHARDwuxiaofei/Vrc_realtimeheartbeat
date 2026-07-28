@@ -23,16 +23,20 @@ from .settings import AppSettings, load_settings, save_settings
 from .updates import fetch_latest_release, is_newer_version
 
 
-BG = "#f3f3f1"
-PANEL = "#ffffff"
-TEXT = "#202124"
-MUTED = "#6f7378"
-BORDER = "#d8d9d6"
-ACCENT = "#c6404d"
-ACCENT_DARK = "#aa3340"
-GOOD = "#31845b"
-WARN = "#b07722"
-CHART_GRID = "#e8e8e5"
+BG = "#0b0b0f"
+PANEL = "#121216"
+PANEL_ELEVATED = "#1b1b20"
+FIELD = "#242329"
+TEXT = "#e6e1e5"
+MUTED = "#cac4d0"
+BORDER = "#49454f"
+PRIMARY = "#d0bcff"
+PRIMARY_DARK = "#b69df8"
+ACCENT = "#ffb4ab"
+ACCENT_DARK = "#e99b93"
+GOOD = "#8bd5a3"
+WARN = "#ffc56d"
+CHART_GRID = "#302d35"
 
 
 def enable_dpi_awareness() -> None:
@@ -78,6 +82,7 @@ class HeartRateBridgeApp:
         self.ble_device_choice = tk.StringVar(value=saved_ble_label)
         self.ble_status_text = tk.StringVar(value="直连模式未启用")
         self.diagnostic_mode = tk.BooleanVar(value=False)
+        self.diagnostic_toggle_text = tk.StringVar(value="开始曲线记录")
         self.chart_minutes = tk.IntVar(value=1)
         self.bpm_text = tk.StringVar(value="--")
         self.signal_text = tk.StringVar(
@@ -90,7 +95,7 @@ class HeartRateBridgeApp:
         self.minimum_text = tk.StringVar(value="--")
         self.maximum_text = tk.StringVar(value="--")
         self.average_text = tk.StringVar(value="--")
-        self.csv_text = tk.StringVar(value="诊断模式未开启")
+        self.csv_text = tk.StringVar(value="点击右上角开始记录")
         self.chart_title = tk.StringVar(value="最近 1 分钟心率曲线")
         self.update_text = tk.StringVar(value="正在检查 GitHub…")
 
@@ -105,8 +110,8 @@ class HeartRateBridgeApp:
 
     def _configure_window(self) -> None:
         self.root.title("VRChat 心率桥 · Python")
-        self.root.geometry("960x980")
-        self.root.minsize(840, 840)
+        self.root.geometry("1120x820")
+        self.root.minsize(900, 640)
         self.root.configure(background=BG)
         try:
             self.root.iconbitmap(_resource_path("heart-relay.ico"))
@@ -116,51 +121,103 @@ class HeartRateBridgeApp:
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure("TEntry", fieldbackground=PANEL, foreground=TEXT, bordercolor=BORDER, padding=7)
+        style.configure(
+            "TEntry",
+            fieldbackground=FIELD,
+            foreground=TEXT,
+            insertcolor=TEXT,
+            bordercolor=FIELD,
+            lightcolor=FIELD,
+            darkcolor=FIELD,
+            padding=10,
+        )
+        style.map("TEntry", bordercolor=[("focus", PRIMARY)])
+        style.configure(
+            "TCombobox",
+            fieldbackground=FIELD,
+            background=FIELD,
+            foreground=TEXT,
+            arrowcolor=MUTED,
+            bordercolor=FIELD,
+            lightcolor=FIELD,
+            darkcolor=FIELD,
+            padding=8,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", FIELD)],
+            foreground=[("readonly", TEXT)],
+            selectbackground=[("readonly", FIELD)],
+            selectforeground=[("readonly", TEXT)],
+            bordercolor=[("focus", PRIMARY)],
+        )
         style.configure("TCheckbutton", background=PANEL, foreground=TEXT, font=("Microsoft YaHei UI", 9))
         style.map("TCheckbutton", background=[("active", PANEL)])
         style.configure(
             "Primary.TButton",
-            background=ACCENT,
-            foreground="#ffffff",
-            bordercolor=ACCENT,
-            padding=(14, 8),
+            background=PRIMARY,
+            foreground="#281b3e",
+            bordercolor=PRIMARY,
+            lightcolor=PRIMARY,
+            darkcolor=PRIMARY,
+            padding=(18, 11),
             font=("Microsoft YaHei UI", 9, "bold"),
         )
-        style.map("Primary.TButton", background=[("active", ACCENT_DARK), ("disabled", "#d2a7ac")])
+        style.map(
+            "Primary.TButton",
+            background=[("active", PRIMARY_DARK), ("disabled", "#5d5667")],
+            foreground=[("disabled", "#a49daa")],
+        )
         style.configure(
             "Secondary.TButton",
-            background="#ececea",
+            background=FIELD,
             foreground=TEXT,
-            bordercolor=BORDER,
-            padding=(14, 8),
+            bordercolor=FIELD,
+            lightcolor=FIELD,
+            darkcolor=FIELD,
+            padding=(16, 10),
             font=("Microsoft YaHei UI", 9),
         )
-        style.map("Secondary.TButton", background=[("active", "#dfdfdc")])
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#34313a"), ("disabled", "#18171b")],
+            foreground=[("disabled", "#68636d")],
+        )
+        style.configure(
+            "Dark.Vertical.TScrollbar",
+            background=FIELD,
+            troughcolor=BG,
+            bordercolor=BG,
+            arrowcolor=MUTED,
+            lightcolor=FIELD,
+            darkcolor=FIELD,
+        )
 
     def _build_ui(self) -> None:
-        outer = tk.Frame(self.root, bg=BG)
-        outer.pack(fill="both", expand=True, padx=22, pady=16)
-
-        header = tk.Frame(outer, bg=BG)
-        header.pack(fill="x", pady=(0, 11))
-        tk.Label(header, text="♥", bg=BG, fg=ACCENT, font=("Segoe UI Symbol", 24, "bold")).pack(side="left")
+        header = tk.Frame(self.root, bg=BG)
+        header.pack(fill="x", padx=28, pady=(20, 14))
+        brand = tk.Frame(header, bg=PANEL_ELEVATED, width=48, height=48)
+        brand.pack(side="left")
+        brand.pack_propagate(False)
+        tk.Label(brand, text="♥", bg=PANEL_ELEVATED, fg=ACCENT, font=("Segoe UI Symbol", 23, "bold")).pack(
+            expand=True,
+        )
         title_block = tk.Frame(header, bg=BG)
-        title_block.pack(side="left", padx=(9, 0))
+        title_block.pack(side="left", padx=(13, 0))
         tk.Label(
             title_block,
             text="VRChat 心率桥",
             bg=BG,
             fg=TEXT,
-            font=("Microsoft YaHei UI", 16, "bold"),
+            font=("Microsoft YaHei UI", 19, "bold"),
         ).pack(anchor="w")
         tk.Label(
             title_block,
-            text=f"Python 版 {__version__}   ·   Wearable → Phone / PC → OSC",
+            text=f"WATCH  ·  PHONE  ·  PC  ·  VRCHAT     v{__version__}",
             bg=BG,
             fg=MUTED,
-            font=("Microsoft YaHei UI", 8),
-        ).pack(anchor="w", pady=(2, 0))
+            font=("Microsoft YaHei UI", 8, "bold"),
+        ).pack(anchor="w", pady=(3, 0))
         update_button = ttk.Button(
             header,
             textvariable=self.update_text,
@@ -168,58 +225,108 @@ class HeartRateBridgeApp:
             command=self._open_or_check_update,
         )
         update_button.pack(side="right", anchor="e", pady=(3, 0))
+        ttk.Button(
+            header,
+            textvariable=self.diagnostic_toggle_text,
+            style="Primary.TButton",
+            command=self.toggle_diagnostic_view,
+        ).pack(side="right", anchor="e", padx=(0, 10), pady=(3, 0))
 
-        summary = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        viewport = tk.Frame(self.root, bg=BG)
+        viewport.pack(fill="both", expand=True)
+        self.content_canvas = tk.Canvas(viewport, bg=BG, highlightthickness=0, borderwidth=0)
+        page_scrollbar = ttk.Scrollbar(
+            viewport,
+            orient="vertical",
+            command=self.content_canvas.yview,
+            style="Dark.Vertical.TScrollbar",
+        )
+        self.content_canvas.configure(yscrollcommand=page_scrollbar.set)
+        self.content_canvas.pack(side="left", fill="both", expand=True)
+        page_scrollbar.pack(side="right", fill="y")
+        outer = tk.Frame(self.content_canvas, bg=BG)
+        self.content_window = self.content_canvas.create_window((0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", self._on_content_configure)
+        self.content_canvas.bind("<Configure>", self._on_canvas_configure)
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self._on_mousewheel, add="+")
+        self.root.bind_all("<Button-5>", self._on_mousewheel, add="+")
+
+        content = tk.Frame(outer, bg=BG)
+        content.pack(fill="both", expand=True, padx=28, pady=(0, 28))
+
+        summary = tk.Frame(content, bg=PANEL_ELEVATED)
         summary.pack(fill="x")
-        bpm_column = tk.Frame(summary, bg=PANEL)
-        bpm_column.pack(side="left", fill="both", expand=True, padx=22, pady=14)
-        tk.Label(bpm_column, text="当前心率", bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(anchor="w")
-        bpm_line = tk.Frame(bpm_column, bg=PANEL)
+        tk.Frame(summary, bg=ACCENT, width=5).pack(side="left", fill="y")
+        bpm_column = tk.Frame(summary, bg=PANEL_ELEVATED)
+        bpm_column.pack(side="left", fill="both", expand=True, padx=24, pady=19)
+        tk.Label(
+            bpm_column,
+            text="实时心率",
+            bg=PANEL_ELEVATED,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(anchor="w")
+        bpm_line = tk.Frame(bpm_column, bg=PANEL_ELEVATED)
         bpm_line.pack(anchor="w")
-        tk.Label(bpm_line, textvariable=self.bpm_text, bg=PANEL, fg=TEXT, font=("Segoe UI", 34, "bold")).pack(side="left")
-        tk.Label(bpm_line, text=" BPM", bg=PANEL, fg=MUTED, font=("Segoe UI", 13, "bold")).pack(
-            side="left", anchor="s", pady=(0, 6)
+        tk.Label(
+            bpm_line,
+            textvariable=self.bpm_text,
+            bg=PANEL_ELEVATED,
+            fg=TEXT,
+            font=("Segoe UI", 48, "bold"),
+        ).pack(side="left")
+        tk.Label(bpm_line, text=" BPM", bg=PANEL_ELEVATED, fg=ACCENT, font=("Segoe UI", 12, "bold")).pack(
+            side="left", anchor="s", pady=(0, 10),
         )
         self.signal_label = tk.Label(
-            bpm_column, textvariable=self.signal_text, bg=PANEL, fg=MUTED,
+            bpm_column, textvariable=self.signal_text, bg=PANEL_ELEVATED, fg=MUTED,
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         self.signal_label.pack(anchor="w")
         tk.Label(
-            bpm_column, textvariable=self.detail_text, bg=PANEL, fg=MUTED,
+            bpm_column, textvariable=self.detail_text, bg=PANEL_ELEVATED, fg=MUTED,
             font=("Microsoft YaHei UI", 8),
         ).pack(anchor="w", pady=(3, 0))
 
-        self.stats_panel = tk.Frame(summary, bg="#fafaf8")
-        tk.Label(self.stats_panel, text="所选时间范围", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
-            anchor="w", padx=18, pady=(15, 8)
+        self.stats_panel = tk.Frame(summary, bg=PANEL)
+        self.stats_panel.pack(side="left", fill="y", padx=(0, 1), pady=1)
+        tk.Label(
+            self.stats_panel,
+            text="区间统计",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(
+            anchor="w", padx=20, pady=(18, 10),
         )
-        stats_row = tk.Frame(self.stats_panel, bg="#fafaf8")
-        stats_row.pack(padx=18, pady=(0, 14))
+        stats_row = tk.Frame(self.stats_panel, bg=PANEL)
+        stats_row.pack(padx=20, pady=(0, 18))
         self._stat_value(stats_row, "最低", self.minimum_text, 0)
         self._stat_value(stats_row, "最高", self.maximum_text, 1)
         self._stat_value(stats_row, "平均", self.average_text, 2)
 
-        self.status_column = tk.Frame(summary, bg="#fafaf8", width=240)
+        self.status_column = tk.Frame(summary, bg=PANEL, width=255)
         self.status_column.pack(side="right", fill="y", padx=(0, 1), pady=1)
         self.status_column.pack_propagate(False)
-        tk.Label(self.status_column, text="连接状态", bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
-            anchor="w", padx=18, pady=(15, 7)
+        tk.Label(self.status_column, text="链路状态", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 9, "bold")).pack(
+            anchor="w", padx=20, pady=(18, 9),
         )
         self._status_row(self.status_column, "输入引擎", self.receiver_text)
         self._status_row(self.status_column, "输入设备", self.phone_text)
         self._status_row(self.status_column, "VRChat OSC", self.osc_text)
 
-        self.chart_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        self.chart_panel = tk.Frame(content, bg=PANEL)
+        self.chart_panel.pack(fill="x", pady=(14, 0))
         chart_header = tk.Frame(self.chart_panel, bg=PANEL)
-        chart_header.pack(fill="x", padx=16, pady=(10, 2))
+        chart_header.pack(fill="x", padx=20, pady=(17, 3))
         tk.Label(
             chart_header, textvariable=self.chart_title, bg=PANEL, fg=TEXT,
-            font=("Microsoft YaHei UI", 10, "bold"),
+            font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(side="left")
         tk.Label(chart_header, textvariable=self.csv_text, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="right")
         slider_row = tk.Frame(self.chart_panel, bg=PANEL)
-        slider_row.pack(fill="x", padx=16)
+        slider_row.pack(fill="x", padx=20)
         tk.Label(slider_row, text="显示范围", bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
         tk.Scale(
             slider_row,
@@ -235,20 +342,27 @@ class HeartRateBridgeApp:
             highlightthickness=0,
             troughcolor=CHART_GRID,
             activebackground=ACCENT,
-        ).pack(side="left", fill="x", expand=True, padx=(10, 0))
-        self.chart = tk.Canvas(self.chart_panel, height=160, bg="#fafaf8", highlightthickness=0)
-        self.chart.pack(fill="x", padx=16, pady=(3, 13))
+        ).pack(side="left", fill="x", expand=True, padx=(12, 0))
+        self.chart = tk.Canvas(self.chart_panel, height=190, bg=PANEL_ELEVATED, highlightthickness=0)
+        self.chart.pack(fill="x", padx=20, pady=(5, 18))
         self.chart.bind("<Configure>", lambda _event: self._draw_chart())
 
-        self.source_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        self.source_panel.pack(fill="x", pady=(11, 0))
+        self.source_panel = tk.Frame(content, bg=PANEL)
+        self.source_panel.pack(fill="x", pady=(14, 0))
         tk.Label(
             self.source_panel,
             text="心率来源",
             bg=PANEL,
             fg=TEXT,
-            font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=6, sticky="w", padx=16, pady=(11, 7))
+            font=("Microsoft YaHei UI", 12, "bold"),
+        ).grid(row=0, column=0, columnspan=6, sticky="w", padx=20, pady=(17, 4))
+        tk.Label(
+            self.source_panel,
+            text="选择 Galaxy Watch 手机中转，或让小米手环直接连接这台电脑",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 12))
         self.source_combo = ttk.Combobox(
             self.source_panel,
             textvariable=self.input_source_label,
@@ -256,7 +370,7 @@ class HeartRateBridgeApp:
             state="readonly",
             width=28,
         )
-        self.source_combo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(16, 6), pady=(0, 8))
+        self.source_combo.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 10))
         self.source_combo.bind("<<ComboboxSelected>>", self._change_input_source)
         self.ble_device_combo = ttk.Combobox(
             self.source_panel,
@@ -264,7 +378,7 @@ class HeartRateBridgeApp:
             state="disabled",
             width=34,
         )
-        self.ble_device_combo.grid(row=1, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+        self.ble_device_combo.grid(row=2, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 10))
         self.ble_device_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_source_controls())
         self.ble_scan_button = ttk.Button(
             self.source_panel,
@@ -273,7 +387,7 @@ class HeartRateBridgeApp:
             command=self.scan_ble_devices,
             state="disabled",
         )
-        self.ble_scan_button.grid(row=1, column=4, sticky="ew", padx=6, pady=(0, 8))
+        self.ble_scan_button.grid(row=2, column=4, sticky="ew", padx=6, pady=(0, 10))
         self.ble_connect_button = ttk.Button(
             self.source_panel,
             text="连接",
@@ -281,14 +395,14 @@ class HeartRateBridgeApp:
             command=self.connect_selected_ble_device,
             state="disabled",
         )
-        self.ble_connect_button.grid(row=1, column=5, sticky="ew", padx=(6, 16), pady=(0, 8))
+        self.ble_connect_button.grid(row=2, column=5, sticky="ew", padx=(6, 20), pady=(0, 10))
         tk.Label(
             self.source_panel,
             textvariable=self.ble_status_text,
             bg=PANEL,
             fg=MUTED,
             font=("Microsoft YaHei UI", 8),
-        ).grid(row=2, column=0, columnspan=4, sticky="w", padx=16, pady=(0, 10))
+        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=20, pady=(0, 16))
         self.ble_disconnect_button = ttk.Button(
             self.source_panel,
             text="断开 BLE",
@@ -296,15 +410,15 @@ class HeartRateBridgeApp:
             command=self.disconnect_ble_device,
             state="disabled",
         )
-        self.ble_disconnect_button.grid(row=2, column=4, columnspan=2, sticky="e", padx=(6, 16), pady=(0, 10))
+        self.ble_disconnect_button.grid(row=3, column=4, columnspan=2, sticky="e", padx=(6, 20), pady=(0, 16))
         for column in range(6):
             self.source_panel.grid_columnconfigure(column, weight=1)
 
-        self.settings_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        self.settings_panel.pack(fill="x", pady=(11, 0))
+        self.settings_panel = tk.Frame(content, bg=PANEL)
+        self.settings_panel.pack(fill="x", pady=(14, 0))
         settings_panel = self.settings_panel
-        tk.Label(settings_panel, text="连接与工具", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).grid(
-            row=0, column=0, columnspan=8, sticky="w", padx=16, pady=(12, 8)
+        tk.Label(settings_panel, text="连接与工具", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(
+            row=0, column=0, columnspan=8, sticky="w", padx=20, pady=(17, 10),
         )
         self._entry_field(settings_panel, 1, 0, "手机 UDP 端口", self.listen_port)
         self._entry_field(settings_panel, 1, 2, "VRChat OSC 端口", self.osc_port)
@@ -312,66 +426,85 @@ class HeartRateBridgeApp:
             settings_panel, text="发送到 VRChat OSC", variable=self.forward_osc, command=self._update_osc_label,
         ).grid(row=1, column=4, columnspan=2, sticky="w", padx=12, pady=(0, 12))
         ttk.Checkbutton(
-            settings_panel, text="诊断模式（按需采集扩展数据）",
+            settings_panel, text="记录曲线与统计（诊断模式）",
             variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode,
-        ).grid(row=1, column=6, columnspan=2, sticky="w", padx=(8, 16), pady=(0, 12))
+        ).grid(row=1, column=6, columnspan=2, sticky="w", padx=(8, 20), pady=(0, 12))
 
         self.start_button = ttk.Button(settings_panel, text="启动接收", style="Primary.TButton", command=self.start_receiver)
-        self.start_button.grid(row=2, column=0, sticky="ew", padx=(16, 4), pady=(0, 13))
+        self.start_button.grid(row=2, column=0, sticky="ew", padx=(20, 4), pady=(0, 18))
         self.stop_button = ttk.Button(
             settings_panel, text="停止", style="Secondary.TButton", command=self.stop_receiver, state="disabled",
         )
-        self.stop_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(0, 13))
+        self.stop_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(0, 18))
         self.avatar_test_button = ttk.Button(
             settings_panel, text="Avatar 参数测试", style="Secondary.TButton", command=self.send_avatar_test,
             state="disabled",
         )
-        self.avatar_test_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
+        self.avatar_test_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=4, pady=(0, 18))
         self.qr_button = ttk.Button(
             settings_panel, text="显示配对二维码", style="Secondary.TButton", command=self.show_pairing_qr,
         )
-        self.qr_button.grid(row=2, column=4, columnspan=2, sticky="ew", padx=4, pady=(0, 13))
+        self.qr_button.grid(row=2, column=4, columnspan=2, sticky="ew", padx=4, pady=(0, 18))
         self.diagnostic_button = ttk.Button(
             settings_panel, text="一键诊断", style="Secondary.TButton", command=self.run_diagnostics,
             state="disabled",
         )
-        self.diagnostic_button.grid(row=2, column=6, sticky="ew", padx=4, pady=(0, 13))
+        self.diagnostic_button.grid(row=2, column=6, sticky="ew", padx=4, pady=(0, 18))
         self.export_button = ttk.Button(
             settings_panel, text="导出 CSV…", style="Secondary.TButton", command=self.export_csv,
             state="disabled",
         )
-        self.export_button.grid(row=2, column=7, sticky="ew", padx=(4, 16), pady=(0, 13))
+        self.export_button.grid(row=2, column=7, sticky="ew", padx=(4, 20), pady=(0, 18))
         for column in range(8):
             settings_panel.grid_columnconfigure(column, weight=1)
 
-        log_panel = tk.Frame(outer, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        log_panel.pack(fill="both", expand=True, pady=(11, 0))
-        tk.Label(log_panel, text="运行记录", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).pack(
-            anchor="w", padx=16, pady=(10, 6)
+        log_panel = tk.Frame(content, bg=PANEL)
+        log_panel.pack(fill="both", expand=True, pady=(14, 0))
+        tk.Label(log_panel, text="运行记录", bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).pack(
+            anchor="w", padx=20, pady=(17, 8),
         )
         self.log = tk.Text(
             log_panel, height=6, wrap="word", relief="flat", borderwidth=0,
-            bg="#f7f7f5", fg="#45484c", insertbackground=TEXT,
-            font=("Cascadia Mono", 8), padx=12, pady=8, state="disabled",
+            bg=PANEL_ELEVATED, fg=MUTED, insertbackground=TEXT,
+            font=("Cascadia Mono", 9), padx=14, pady=12, state="disabled",
         )
-        self.log.pack(fill="both", expand=True, padx=16, pady=(0, 13))
+        self.log.pack(fill="both", expand=True, padx=20, pady=(0, 18))
         self._refresh_source_controls()
 
+    def _on_content_configure(self, _event: tk.Event) -> None:
+        self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        self.content_canvas.itemconfigure(self.content_window, width=event.width)
+
+    def _on_mousewheel(self, event: tk.Event) -> str:
+        if getattr(event, "num", None) == 4:
+            units = -3
+        elif getattr(event, "num", None) == 5:
+            units = 3
+        else:
+            delta = getattr(event, "delta", 0)
+            if delta == 0:
+                return "break"
+            units = -max(1, min(6, abs(delta) // 40)) if delta > 0 else max(1, min(6, abs(delta) // 40))
+        self.content_canvas.yview_scroll(units, "units")
+        return "break"
+
     def _stat_value(self, parent: tk.Widget, label: str, value: tk.StringVar, column: int) -> None:
-        block = tk.Frame(parent, bg="#fafaf8")
+        block = tk.Frame(parent, bg=PANEL)
         block.grid(row=0, column=column, padx=(0 if column == 0 else 16, 0))
-        tk.Label(block, text=label, bg="#fafaf8", fg=MUTED, font=("Microsoft YaHei UI", 8)).pack()
-        tk.Label(block, textvariable=value, bg="#fafaf8", fg=TEXT, font=("Segoe UI", 17, "bold")).pack()
+        tk.Label(block, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack()
+        tk.Label(block, textvariable=value, bg=PANEL, fg=TEXT, font=("Segoe UI", 18, "bold")).pack()
 
     def _status_row(self, parent: tk.Widget, label: str, value: tk.StringVar) -> None:
-        row = tk.Frame(parent, bg="#fafaf8")
-        row.pack(fill="x", padx=18, pady=2)
-        tk.Label(row, text=label, bg="#fafaf8", fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
-        tk.Label(row, textvariable=value, bg="#fafaf8", fg=TEXT, font=("Microsoft YaHei UI", 8, "bold")).pack(side="right")
+        row = tk.Frame(parent, bg=PANEL)
+        row.pack(fill="x", padx=20, pady=3)
+        tk.Label(row, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
+        tk.Label(row, textvariable=value, bg=PANEL, fg=TEXT, font=("Microsoft YaHei UI", 8, "bold")).pack(side="right")
 
     def _entry_field(self, parent: tk.Widget, row: int, column: int, label: str, variable: tk.StringVar) -> None:
         field = tk.Frame(parent, bg=PANEL)
-        field.grid(row=row, column=column, columnspan=2, sticky="ew", padx=(16 if column == 0 else 8, 4), pady=(0, 10))
+        field.grid(row=row, column=column, columnspan=2, sticky="ew", padx=(20 if column == 0 else 8, 4), pady=(0, 10))
         tk.Label(field, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w")
         entry = ttk.Entry(field, textvariable=variable, width=12)
         entry.pack(fill="x", pady=(3, 0))
@@ -603,8 +736,13 @@ class HeartRateBridgeApp:
         self._append_log("电脑诊断：" + "；".join(lines))
         messagebox.showinfo("一键诊断", result + "\n\n" + "\n".join(lines))
 
+    def toggle_diagnostic_view(self) -> None:
+        self.diagnostic_mode.set(not self.diagnostic_mode.get())
+        self._toggle_diagnostic_mode()
+
     def _toggle_diagnostic_mode(self) -> None:
         enabled = self.diagnostic_mode.get()
+        self.diagnostic_toggle_text.set("停止曲线记录" if enabled else "开始曲线记录")
         if enabled:
             try:
                 if self.diagnostic_session_started:
@@ -616,8 +754,6 @@ class HeartRateBridgeApp:
                 self.diagnostic_mode.set(False)
                 messagebox.showerror("诊断模式", f"无法创建诊断 CSV：{exc}")
                 return
-            self.stats_panel.pack(side="left", fill="y", padx=1, pady=1, before=self.status_column)
-            self.chart_panel.pack(fill="x", pady=(11, 0), before=self.settings_panel)
             self.avatar_test_button.configure(state="normal")
             self.diagnostic_button.configure(state="normal")
             self.export_button.configure(state="normal")
@@ -625,12 +761,10 @@ class HeartRateBridgeApp:
             self._append_log("诊断模式已开启：扩展字段、CSV、曲线和统计开始工作")
         else:
             self.diagnostic_csv.stop()
-            self.stats_panel.pack_forget()
-            self.chart_panel.pack_forget()
             self.avatar_test_button.configure(state="disabled")
             self.diagnostic_button.configure(state="disabled")
             self.export_button.configure(state="disabled")
-            self.csv_text.set("诊断模式未开启")
+            self.csv_text.set("点击右上角开始记录")
             self._append_log("诊断模式已关闭：停止扩展字段和 CSV 写入")
         if self.runtime is not None:
             self.runtime.set_diagnostic_mode(enabled)

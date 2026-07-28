@@ -43,6 +43,7 @@ data class PhoneRelayState(
     val forwarding: Boolean = false,
     val forwardingEnabled: Boolean = true,
     val forwardIntervalSeconds: Int = 5,
+    val forwardIntervalUpdatedEpochMillis: Long = 0L,
     val throttledCount: Long = 0,
     val diagnosticRunning: Boolean = false,
     val diagnosticStatus: String = "尚未诊断",
@@ -85,7 +86,10 @@ object PhoneRelayRepository {
                 networkType = networkType(context),
                 vpnActive = isVpnActive(context),
                 forwardingEnabled = prefs.getBoolean("forwardingEnabled", true),
-                forwardIntervalSeconds = prefs.getInt("forwardIntervalSeconds", 5).coerceIn(1, 30),
+                forwardIntervalSeconds = SyncedRelayInterval.normalize(
+                    prefs.getInt("forwardIntervalSeconds", 5),
+                ),
+                forwardIntervalUpdatedEpochMillis = prefs.getLong("forwardIntervalUpdatedEpochMillis", 0L),
                 xiaomiDeviceAddress = prefs.getString("xiaomiDeviceAddress", null),
                 xiaomiDeviceName = prefs.getString("xiaomiDeviceName", null),
             )
@@ -209,12 +213,15 @@ object PhoneRelayRepository {
 
     fun setForwardIntervalSeconds(seconds: Int) {
         val context = appContext ?: return
-        val value = seconds.coerceIn(1, 30)
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
-            putInt("forwardIntervalSeconds", value)
+        val value = SyncedRelayInterval.normalize(seconds)
+        val updatedEpochMillis = System.currentTimeMillis()
+        applyForwardInterval(context, value, updatedEpochMillis)
+        val nodeId = mutableState.value.watchNodeId
+            .takeIf { mutableState.value.heartRateSource == HeartRateSource.GALAXY_WATCH }
+            ?.takeUnless { it == "--" }
+        if (nodeId != null) {
+            syncRelayIntervalToWatch(context, nodeId)
         }
-        lastHeartRateForwardElapsed = 0L
-        update { it.copy(forwardIntervalSeconds = value, lastError = "--") }
     }
 
     fun setForwardingEnabled(enabled: Boolean) {
@@ -267,13 +274,20 @@ object PhoneRelayRepository {
         val bpm = json.optInt("bpm", -1).takeIf { it > 0 }
         val sampleMillis = json.optLong("sampleEpochMillis", 0L).takeIf { it > 0 }
         val watchRelayInterval = json.optInt("watchRelayIntervalSeconds", 0).takeIf { it in 1..30 }
+        val watchRelayIntervalUpdatedEpochMillis =
+            json.optLong("watchRelayIntervalUpdatedEpochMillis", 0L).coerceAtLeast(0L)
         val watchRelayMode = json.optString("watchRelayMode").takeIf { it.isNotBlank() }
         val watchAckRequested = json.optBoolean("watchAckRequested", true)
         val simulated = json.optBoolean("simulated", false)
-        val effectiveForwardInterval = maxOf(
-            mutableState.value.forwardIntervalSeconds,
-            watchRelayInterval ?: 0,
-        )
+        if (watchRelayInterval != null) {
+            reconcileRelayInterval(
+                context = context,
+                nodeId = sourceNodeId,
+                remoteIntervalSeconds = watchRelayInterval,
+                remoteUpdatedEpochMillis = watchRelayIntervalUpdatedEpochMillis,
+            )
+        }
+        val effectiveForwardInterval = mutableState.value.forwardIntervalSeconds
         if (diagnosticMode) {
             json.put("diagnosticMode", true)
             json.put("phoneReceivedEpochMillis", phoneReceiveMillis)
@@ -470,6 +484,25 @@ object PhoneRelayRepository {
         if (nodeId != null) syncDiagnosticModeToWatch(context, nodeId, enabled)
     }
 
+    fun handleWatchControl(sourceNodeId: String, bytes: ByteArray) {
+        val context = appContext ?: return
+        val message = runCatching {
+            JSONObject(bytes.toString(Charsets.UTF_8))
+        }.getOrElse { failure ->
+            update { it.copy(lastError = "手表控制指令格式错误：${failure.message}") }
+            return
+        }
+        val intervalSeconds = message.optInt("relayIntervalSeconds", 0)
+        if (intervalSeconds !in SyncedRelayInterval.supported) return
+        update { it.copy(watchNodeId = sourceNodeId, watchConnected = true) }
+        reconcileRelayInterval(
+            context = context,
+            nodeId = sourceNodeId,
+            remoteIntervalSeconds = intervalSeconds,
+            remoteUpdatedEpochMillis = message.optLong("relayIntervalUpdatedEpochMillis", 0L).coerceAtLeast(0L),
+        )
+    }
+
     fun sendTestPacket() = runDiagnostics()
 
     @Synchronized
@@ -645,6 +678,11 @@ object PhoneRelayRepository {
             .put("phoneEpochMillis", System.currentTimeMillis())
             .put("error", error)
             .put("diagnosticMode", mutableState.value.diagnosticMode)
+            .put("relayIntervalSeconds", mutableState.value.forwardIntervalSeconds)
+            .put(
+                "relayIntervalUpdatedEpochMillis",
+                mutableState.value.forwardIntervalUpdatedEpochMillis,
+            )
             .toString()
             .toByteArray(Charsets.UTF_8)
         Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.ACK_PATH, payload)
@@ -682,6 +720,68 @@ object PhoneRelayRepository {
                 }
                 Log.e(TAG, "Failed to sync diagnostic mode to watch", failure)
                 update { it.copy(lastError = "同步手表诊断模式失败：${failure.message}") }
+            }
+    }
+
+    private fun reconcileRelayInterval(
+        context: Context,
+        nodeId: String,
+        remoteIntervalSeconds: Int,
+        remoteUpdatedEpochMillis: Long,
+    ) {
+        val local = mutableState.value
+        val remoteInterval = SyncedRelayInterval.normalize(remoteIntervalSeconds)
+        when (
+            SyncedRelayInterval.decide(
+                localInterval = local.forwardIntervalSeconds,
+                localUpdatedEpochMillis = local.forwardIntervalUpdatedEpochMillis,
+                remoteInterval = remoteInterval,
+                remoteUpdatedEpochMillis = remoteUpdatedEpochMillis,
+            )
+        ) {
+            RelayIntervalDecision.APPLY_REMOTE -> {
+                applyForwardInterval(context, remoteInterval, remoteUpdatedEpochMillis)
+            }
+            RelayIntervalDecision.SEND_LOCAL -> {
+                syncRelayIntervalToWatch(context, nodeId)
+            }
+            RelayIntervalDecision.NONE -> Unit
+        }
+    }
+
+    private fun applyForwardInterval(
+        context: Context,
+        seconds: Int,
+        updatedEpochMillis: Long,
+    ) {
+        val value = SyncedRelayInterval.normalize(seconds)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putInt("forwardIntervalSeconds", value)
+            putLong("forwardIntervalUpdatedEpochMillis", updatedEpochMillis)
+        }
+        lastHeartRateForwardElapsed = 0L
+        update {
+            it.copy(
+                forwardIntervalSeconds = value,
+                forwardIntervalUpdatedEpochMillis = updatedEpochMillis,
+                lastError = "--",
+            )
+        }
+    }
+
+    private fun syncRelayIntervalToWatch(context: Context, nodeId: String) {
+        val current = mutableState.value
+        val payload = JSONObject()
+            .put("version", 1)
+            .put("type", "relay_interval")
+            .put("relayIntervalSeconds", current.forwardIntervalSeconds)
+            .put("relayIntervalUpdatedEpochMillis", current.forwardIntervalUpdatedEpochMillis)
+            .put("phoneEpochMillis", System.currentTimeMillis())
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.CONTROL_PATH, payload)
+            .addOnFailureListener { failure ->
+                update { it.copy(lastError = "同步手表发送频率失败：${failure.message}") }
             }
     }
 
@@ -728,4 +828,32 @@ object PhoneRelayRepository {
     )
 
     private const val TAG = "HR_RELAY"
+}
+
+internal object SyncedRelayInterval {
+    val supported = setOf(1, 5, 10)
+
+    fun normalize(seconds: Int): Int = when {
+        seconds <= 1 -> 1
+        seconds <= 5 -> 5
+        else -> 10
+    }
+
+    fun decide(
+        localInterval: Int,
+        localUpdatedEpochMillis: Long,
+        remoteInterval: Int,
+        remoteUpdatedEpochMillis: Long,
+    ): RelayIntervalDecision = when {
+        remoteUpdatedEpochMillis > localUpdatedEpochMillis -> RelayIntervalDecision.APPLY_REMOTE
+        remoteUpdatedEpochMillis < localUpdatedEpochMillis -> RelayIntervalDecision.SEND_LOCAL
+        remoteInterval != localInterval -> RelayIntervalDecision.APPLY_REMOTE
+        else -> RelayIntervalDecision.NONE
+    }
+}
+
+internal enum class RelayIntervalDecision {
+    APPLY_REMOTE,
+    SEND_LOCAL,
+    NONE,
 }
