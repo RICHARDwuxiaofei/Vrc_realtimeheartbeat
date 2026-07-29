@@ -64,6 +64,7 @@ class ExerciseForegroundService : Service() {
     private lateinit var relaySettings: WatchRelaySettings
     private lateinit var sensorManager: SensorManager
     private var staleTicker: Job? = null
+    private var notificationTicker: Job? = null
     private var staleLatched = false
     private var deliveryWakeLock: PowerManager.WakeLock? = null
     private var wakeLockSessionId: String? = null
@@ -342,6 +343,7 @@ class ExerciseForegroundService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, buildNotification(store.state.value.bpm))
         }
+        startNotificationTicker()
         logger.info(
             "FOREGROUND_SERVICE_COMMAND",
             "Exercise foreground service received a command",
@@ -364,6 +366,7 @@ class ExerciseForegroundService : Service() {
 
     override fun onDestroy() {
         staleTicker?.cancel()
+        notificationTicker?.cancel()
         stopDirectHeartRateRelay("SERVICE_DESTROY")
         releaseDeliveryWakeLock("SERVICE_DESTROY")
         runCatching { unregisterReceiver(screenReceiver) }
@@ -1173,7 +1176,29 @@ class ExerciseForegroundService : Service() {
         )
     }
 
+    private fun startNotificationTicker() {
+        if (notificationTicker?.isActive == true) return
+        notificationTicker = serviceScope.launch {
+            while (isActive) {
+                delay(NOTIFICATION_UPDATE_INTERVAL_MILLIS)
+                val snapshot = store.state.value
+                getSystemService(NotificationManager::class.java)
+                    .notify(NOTIFICATION_ID, buildNotification(snapshot.bpm))
+            }
+        }
+    }
+
     private fun buildNotification(bpm: Int?): Notification {
+        val snapshot = store.state.value
+        val now = System.currentTimeMillis()
+        val freshBpm = watchNotificationBpm(snapshot.copy(bpm = bpm), now)
+        val status = AppLocale.text(
+            this,
+            watchNotificationStatusKey(snapshot.sessionState),
+        )
+        val heartRate = freshBpm?.let { "$it BPM" }
+            ?: AppLocale.text(this, "正在等待心率")
+        val relayMode = AppLocale.text(this, snapshot.relayMode.displayName)
         val openIntent = requireNotNull(packageManager.getLaunchIntentForPackage(packageName)) {
             "No launcher activity is declared for $packageName"
         }.apply {
@@ -1188,16 +1213,12 @@ class ExerciseForegroundService : Service() {
         return Notification.Builder(this, NOTIFICATION_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(AppLocale.text(this, "后台心率传输运行中"))
-            .setContentText(
-                AppLocale.text(
-                    this,
-                    bpm?.let { "$it BPM · ${store.state.value.relayMode.displayName}" }
-                        ?: "正在等待心率 · ${store.state.value.relayMode.displayName}",
-                ),
-            )
+            .setContentText("$heartRate · $status · $relayMode")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setShowWhen(true)
+            .setWhen(now)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
     }
@@ -1221,6 +1242,7 @@ class ExerciseForegroundService : Service() {
         private const val WATCH_ACK_INTERVAL_MILLIS = 60_000L
         private const val PRODUCTION_TICK_MILLIS = 5_000L
         private const val DIAGNOSTIC_TICK_MILLIS = 1_000L
+        private const val NOTIFICATION_UPDATE_INTERVAL_MILLIS = 5_000L
         private val DIRECT_EXECUTOR = Executor { it.run() }
 
         fun requestStart(context: Context) {

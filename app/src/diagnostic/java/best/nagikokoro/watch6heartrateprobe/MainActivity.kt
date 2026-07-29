@@ -1,9 +1,12 @@
 package best.nagikokoro.watch6heartrateprobe
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
@@ -58,6 +61,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var diagnosticSimulator: DiagnosticHeartRateSimulator
     private var pendingStartAfterPermission = false
     private var restoreChecked = false
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocale.wrap(newBase))
@@ -128,6 +134,12 @@ class MainActivity : ComponentActivity() {
             mapOf("savedInstanceStatePresent" to (savedInstanceState != null)),
         )
         viewModel.onPermissionCheck(permissionManager.currentState(this))
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         keepActivityScreenOn(true)
 
         setContent {

@@ -269,7 +269,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\WatchTestReport.
 - Android Lint：三个变体均为 0 error；剩余 warning 只有“依赖存在更新版本”的提示，候选分支没有为了追新而变更运行时依赖。
 - 构建：两个 Watch APK、Phone APK、Python EXE 均成功；三套 APK 元数据均为 `versionName=1.1.0`、`versionCode=2`。
 - 报告工具：迁移后的 `tools/WatchTestReport.ps1 -SelfTest` 通过。
-- 真机模拟闭环：2026-07-26 在酒店网络用 SM-R960 `10.25.24.253:43019`、SM-S928B 和 Windows 验证。手表累计发送 135 条后由 UI 停止；电脑 15 秒接收 10 条，全部为 `simulated=true`、`source=watch_diagnostic_simulator`、75–79 BPM，延迟 409–862 ms；手机匹配 PC ACK，手表收到 `pcAck=true`。
+- 真机模拟闭环：2026-07-26 在酒店网络用 SM-R960、SM-S928B 和 Windows 验证。
+  手表累计发送 135 条后由 UI 停止；电脑 15 秒接收 10 条，全部为
+  `simulated=true`、`source=watch_diagnostic_simulator`、75–79 BPM，延迟
+  409–862 ms；手机匹配 PC ACK，手表收到 `pcAck=true`。
 
 模拟闭环已经证明 Watch → Phone → PC → Phone → Watch 和模拟标记成立，但不等于真实传感器、VRChat Avatar 显示或长时功耗已经验收。命令行出现的 SDK XML 3/4 版本提示来自本机 Android Studio 与 command-line tools 版本差异，本轮未影响测试、Lint 或构建；换机时应让两者保持同一 Android Studio 发布周期。
 

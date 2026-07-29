@@ -36,7 +36,9 @@ Android applicationId（手表与手机共用）：`best.nagikokoro.watch6heartr
 - 未佩戴诊断窗口取得 87 次息屏传感器回调，平均间隔 999.6 ms、最大 1022 ms，证明回调本身不再等待亮屏批量补发。
 - 随后正常佩戴取得 73–79 BPM 真实变化；相邻 `sampleEpochMillis` 约 1003–1004 ms，传感器事件到服务接收延迟 0–15 ms。
 - 手机逐序号接收；VPN 已由用户关闭。手机 APK 已修复双 listener 并发去重竞态，并把 PC 离线时的转发队列改为“当前在途 + 最新待发”，不再积压数百条过期心率。
-- Windows `VrcRealtimeHeartbeat.exe` 已在 `192.168.100.188:9123` 实际接收手机 `192.168.100.150` 的真实心率，并逐包返回匹配 ACK；窗口显示实时 BPM 和约 1 秒级端到端数据年龄。
+- Windows `VrcRealtimeHeartbeat.exe` 已在 `<PC_LAN_IP>:9123` 实际接收
+  `<PHONE_LAN_IP>` 的真实心率，并逐包返回匹配 ACK；窗口显示实时 BPM 和约 1 秒级
+  端到端数据年龄。
 - 2026-07-21 三端 UI 已统一为 PulseLink 深色界面并加入应用图标；Windows EXE 升至界面版本 v0.3。手机新增 `1/2/5/10/30 秒`转发间隔（默认 5 秒）和暂停/恢复。实测手机测试包在运行状态到达 PC，暂停后 PC 计数不变，恢复后计数继续增加。
 - 当前尚未完成 VRChat 实际接收、20 分钟新实时模式测试、60 分钟正式续航，以及小米手环 Windows 直连的真机通知/重连验收。
 
@@ -195,7 +197,9 @@ Watch 发送 JSON 字段：
 
 ### 4.4 已测连接与性能
 
-- 2026-07-20 05:06:39–05:06:40，Watch 私有日志记录 `RelayTestActivity` 发送 `relay_test`，发现附近手机 `Richard 的 S24 Ultra`，消息 queued，随后收到同 sequence 的 `pcAck=true`。这只证明 Watch -> Phone -> PC -> Phone -> Watch 的单个诊断包回路。
+- 2026-07-20 05:06:39–05:06:40，Watch 私有日志记录 `RelayTestActivity` 发送
+  `relay_test`，发现附近的 Galaxy S24 Ultra 节点，消息 queued，随后收到同 sequence
+  的 `pcAck=true`。这只证明 Watch -> Phone -> PC -> Phone -> Watch 的单个诊断包回路。
 - 诊断包明确不读传感器；PC 对非 `heart_rate` 包不发送 OSC。
 - 没有持久 PC 日志或测试报告给出该包的端到端延迟。
 - 没有证据证明息屏期间 Data Layer/UDP 持续保持、断网自动恢复或长期无丢包。
@@ -362,7 +366,7 @@ PC 端当前配置和参数：
 
 ```powershell
 $env:JAVA_HOME = 'D:\ANDORID\jbr'
-$env:ANDROID_SDK_ROOT = 'C:\Users\wrq18\AppData\Local\Android\Sdk'
+$env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"
 .\gradlew.bat :app:assembleDiagnosticDebug :app:assembleProductionDebug :mobile:assembleDebug --no-daemon
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -385,15 +389,17 @@ mobile\build\outputs\apk\debug\mobile-debug.apk
 
 ### 9.2 ADB、安装与启动
 
-交接时当前设备：手机 `192.168.100.150:34253` / `R5CX81QGFAV`（SM-S928B）；手表当前临时 ADB 标识 `192.168.100.162:41631`（SM-R960，2026-07-21 已复核）。无线 ADB 端口会变化；执行命令前重新运行 `adb devices -l`，并只选一个标识，避免 ambiguous device。
+交接时设备为 SM-S928B 手机和 SM-R960 手表；两者的 ADB 地址或端口均属于临时现场信息。
+无线 ADB 端口会变化；执行命令前重新运行 `adb devices -l`，并只选一个标识，
+避免 ambiguous device。
 
 ```powershell
-$adb = 'C:\Users\wrq18\AppData\Local\Android\Sdk\platform-tools\adb.exe'
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 & $adb devices -l
 & $adb mdns services
 
-$watch = '192.168.100.162:41631' # 临时端口，必须按当时 devices/mdns 更新
-$phone = '192.168.100.150:34253' # 也可用 USB 序列号 R5CX81QGFAV
+$watch = '<WATCH_IP>:<ADB_PORT>' # 临时端口，必须按当时 devices/mdns 更新
+$phone = '<PHONE_ADB_SERIAL>' # 也可使用当时的 USB 序列号
 
 & $adb -s $watch install -r 'D:\CODE\heartbeats\app\build\outputs\apk\production\debug\app-production-debug.apk'
 & $adb -s $phone install -r 'D:\CODE\heartbeats\mobile\build\outputs\apk\debug\mobile-debug.apk'

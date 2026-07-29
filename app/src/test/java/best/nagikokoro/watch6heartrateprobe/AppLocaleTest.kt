@@ -21,7 +21,7 @@ class AppLocaleTest {
 
     @Test
     fun `technical identifiers stay unchanged`() {
-        val source = "SM-R960 · HEART_RATE_BPM · 10.163.22.1:40999"
+        val source = "SM-R960 · HEART_RATE_BPM · 192.0.2.10:40999"
         assertEquals(source, WatchTranslations.translate(source, AppLanguage.JAPANESE))
     }
 }

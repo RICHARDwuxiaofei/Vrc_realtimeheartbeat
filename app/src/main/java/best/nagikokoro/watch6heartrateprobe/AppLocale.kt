@@ -208,6 +208,7 @@ internal object WatchTranslations {
         "正在启动" to Translation("Starting", "開始中"),
         "运行中" to Translation("Running", "実行中"),
         "已暂停" to Translation("Paused", "一時停止"),
+        "正在停止" to Translation("Stopping", "停止中"),
         "正在结束" to Translation("Ending", "終了中"),
         "已结束" to Translation("Ended", "終了"),
         "错误" to Translation("Error", "エラー"),
