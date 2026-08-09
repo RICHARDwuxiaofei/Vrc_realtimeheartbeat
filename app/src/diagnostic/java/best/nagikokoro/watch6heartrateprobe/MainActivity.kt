@@ -601,7 +601,14 @@ private fun StatusBlock(
         StatusLine("Health Services", state.healthServicesAvailable.displayText)
         StatusLine("手机蓝牙中转", if (relayStatus.phoneNearby) "已连接 ${relayStatus.phoneName}" else "等待手机")
         StatusLine("已发 / 失败", "${relayStatus.sentCount} / ${relayStatus.failedCount}")
-        StatusLine("电脑回执", if (relayStatus.lastPcAck) "已确认" else "等待")
+        StatusLine(
+            "电脑回执",
+            if (relayStatus.lastPcAck) {
+                "${relayStatus.lastPcConfirmedBpm ?: "--"} BPM 已对照"
+            } else {
+                "等待"
+            },
+        )
         StatusLine("远端诊断模式", booleanText(relayStatus.diagnosticMode))
         StatusLine("样本数", sampleCount.toString())
         StatusLine("最后更新时间", lastUpdate?.let(::formatTimestamp) ?: "--")

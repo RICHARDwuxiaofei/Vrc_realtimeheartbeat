@@ -33,6 +33,21 @@ class PhoneRelayNotificationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_AUTO_STOPPED) {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(System.currentTimeMillis()),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification(System.currentTimeMillis()))
+            }
+            showAutoStoppedNotification()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val notification = buildNotification(System.currentTimeMillis())
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(
@@ -68,7 +83,8 @@ class PhoneRelayNotificationService : Service() {
     }
 
     private fun createNotificationChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL,
                 AppLocale.text(this, "心率运行状态"),
@@ -77,6 +93,19 @@ class PhoneRelayNotificationService : Service() {
                 description = AppLocale.text(
                     this@PhoneRelayNotificationService,
                     "每 5 秒显示当前心率和中转状态",
+                )
+                setShowBadge(false)
+            },
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                AUTO_STOP_NOTIFICATION_CHANNEL,
+                AppLocale.text(this, "连接超时提醒"),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = AppLocale.text(
+                    this@PhoneRelayNotificationService,
+                    "连接超时并自动停止后只提醒一次",
                 )
                 setShowBadge(false)
             },
@@ -131,15 +160,55 @@ class PhoneRelayNotificationService : Service() {
             .build()
     }
 
+    private fun showAutoStoppedNotification() {
+        val openIntent = requireNotNull(packageManager.getLaunchIntentForPackage(packageName)).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            1,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, AUTO_STOP_NOTIFICATION_CHANNEL)
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle(AppLocale.text(this, "心率发送已自动停止"))
+            .setContentText(AppLocale.text(this, "连续 5 分钟未连接电脑；点按可重新打开应用"))
+            .setContentIntent(pendingIntent)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setShowWhen(true)
+            .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(AUTO_STOP_NOTIFICATION_ID, notification)
+    }
+
     companion object {
+        private const val ACTION_AUTO_STOPPED =
+            "best.nagikokoro.watch6heartrateprobe.action.PHONE_RELAY_AUTO_STOPPED"
         private const val NOTIFICATION_CHANNEL = "phone_relay_status"
+        private const val AUTO_STOP_NOTIFICATION_CHANNEL = "phone_relay_auto_stop"
         private const val NOTIFICATION_ID = 7301
+        private const val AUTO_STOP_NOTIFICATION_ID = 7302
         private const val NOTIFICATION_UPDATE_INTERVAL_MILLIS = 5_000L
 
         fun requestStart(context: Context) {
+            if (PhoneRelayRepository.state.value.autoStopped) return
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, PhoneRelayNotificationService::class.java),
+            )
+        }
+
+        fun reportAutoStopped(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, PhoneRelayNotificationService::class.java)
+                    .setAction(ACTION_AUTO_STOPPED),
             )
         }
     }

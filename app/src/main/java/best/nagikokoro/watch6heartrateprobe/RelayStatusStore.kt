@@ -11,6 +11,8 @@ data class RelayStatus(
     val lastSentMillis: Long? = null,
     val lastAckMillis: Long? = null,
     val lastPcAck: Boolean = false,
+    val lastPcConfirmedBpm: Int? = null,
+    val lastSuccessfulPcAckElapsedMillis: Long? = null,
     val lastError: String = "--",
     val diagnosticMode: Boolean = false,
 )

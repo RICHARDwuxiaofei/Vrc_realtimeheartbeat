@@ -307,6 +307,14 @@ private fun ProductionScreen(
                     if (relayStatus.phoneNearby) relayStatus.phoneName else "等待连接",
                 )
                 ProductionStatusRow(
+                    "电脑对照",
+                    if (relayStatus.lastPcAck) {
+                        "${relayStatus.lastPcConfirmedBpm ?: "--"} BPM 已确认"
+                    } else {
+                        "等待回执"
+                    },
+                )
+                ProductionStatusRow(
                     "数据",
                     ageSeconds?.let { "$it 秒前" } ?: "--",
                 )

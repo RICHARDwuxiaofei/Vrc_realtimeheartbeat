@@ -1,5 +1,6 @@
 package best.nagikokoro.watch6heartrateprobe
 
+import android.os.SystemClock
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.WearableListenerService
 import org.json.JSONObject
@@ -22,6 +23,7 @@ class PhoneRelayAckService : WearableListenerService() {
                         )
                     }
                 }
+                applyAutoStopSetting(control)
                 applyRelayInterval(control)
             }.onFailure { failure ->
                 RelayStatusStore.update { it.copy(lastError = "手机控制指令解析失败: ${failure.message}") }
@@ -35,12 +37,27 @@ class PhoneRelayAckService : WearableListenerService() {
             if (ack.has("diagnosticMode")) {
                 RelayDiagnosticModeStore.setEnabled(ack.optBoolean("diagnosticMode", false))
             }
+            applyAutoStopSetting(ack)
             applyRelayInterval(ack)
+            val claimedPcAck = ack.optBoolean("pcAck", false)
+            val confirmedBpm = ConfirmedHeartRateContract.exactBpm(ack.opt("confirmedBpm"))
+            val pcAck = claimedPcAck && confirmedBpm != null
+            val error = if (claimedPcAck && confirmedBpm == null) {
+                "电脑回执缺少有效的 BPM 对照值"
+            } else {
+                ack.optString("error", "--").ifBlank { "--" }
+            }
             RelayStatusStore.update {
                 it.copy(
                     lastAckMillis = System.currentTimeMillis(),
-                    lastPcAck = ack.optBoolean("pcAck", false),
-                    lastError = ack.optString("error", "--").ifBlank { "--" },
+                    lastPcAck = pcAck,
+                    lastPcConfirmedBpm = if (pcAck) confirmedBpm else it.lastPcConfirmedBpm,
+                    lastSuccessfulPcAckElapsedMillis = if (pcAck) {
+                        SystemClock.elapsedRealtime()
+                    } else {
+                        it.lastSuccessfulPcAckElapsedMillis
+                    },
+                    lastError = error,
                     diagnosticMode = if (ack.has("diagnosticMode")) {
                         ack.optBoolean("diagnosticMode", false)
                     } else {
@@ -53,8 +70,9 @@ class PhoneRelayAckService : WearableListenerService() {
                 "Phone relay acknowledgement received",
                 mapOf(
                     "sequence" to ack.optLong("sequence", -1L),
-                    "pcAck" to ack.optBoolean("pcAck", false),
-                    "error" to ack.optString("error", ""),
+                    "pcAck" to pcAck,
+                    "confirmedBpm" to confirmedBpm,
+                    "error" to error,
                 ),
             )
         }.onFailure { failure ->
@@ -83,5 +101,18 @@ class PhoneRelayAckService : WearableListenerService() {
                 "updatedEpochMillis" to updatedEpochMillis,
             ),
         )
+    }
+
+    private fun applyAutoStopSetting(message: JSONObject) {
+        if (!message.has("autoStopOnTimeoutEnabled")) return
+        val enabled = message.optBoolean("autoStopOnTimeoutEnabled", true)
+        val changed = WatchRelaySettings.get(this).applyRemoteAutoStopOnTimeout(enabled)
+        if (changed) {
+            DiagnosticLogger.get(this).info(
+                "AUTO_STOP_TIMEOUT_SYNCED_FROM_PHONE",
+                "Phone changed the watch connection-timeout setting",
+                mapOf("enabled" to enabled),
+            )
+        }
     }
 }

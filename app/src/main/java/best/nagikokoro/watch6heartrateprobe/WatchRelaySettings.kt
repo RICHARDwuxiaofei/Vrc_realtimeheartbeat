@@ -44,7 +44,12 @@ class WatchRelaySettings private constructor(context: Context) {
     private val mutableMode = MutableStateFlow(
         WatchRelayMode.fromStoredValue(preferences.getString(KEY_MODE, null)),
     )
+    private val mutableAutoStopOnTimeoutEnabled = MutableStateFlow(
+        preferences.getBoolean(KEY_AUTO_STOP_ON_TIMEOUT_ENABLED, true),
+    )
     val mode: StateFlow<WatchRelayMode> = mutableMode.asStateFlow()
+    val autoStopOnTimeoutEnabled: StateFlow<Boolean> =
+        mutableAutoStopOnTimeoutEnabled.asStateFlow()
     var updatedEpochMillis: Long = preferences.getLong(KEY_UPDATED_EPOCH_MILLIS, 0L)
         private set
 
@@ -58,6 +63,14 @@ class WatchRelaySettings private constructor(context: Context) {
         if (remoteUpdatedEpochMillis < updatedEpochMillis) return false
         if (remoteUpdatedEpochMillis == updatedEpochMillis && mode == mutableMode.value) return false
         applyMode(mode, remoteUpdatedEpochMillis)
+        return true
+    }
+
+    @Synchronized
+    fun applyRemoteAutoStopOnTimeout(enabled: Boolean): Boolean {
+        if (enabled == mutableAutoStopOnTimeoutEnabled.value) return false
+        preferences.edit { putBoolean(KEY_AUTO_STOP_ON_TIMEOUT_ENABLED, enabled) }
+        mutableAutoStopOnTimeoutEnabled.value = enabled
         return true
     }
 
@@ -76,6 +89,7 @@ class WatchRelaySettings private constructor(context: Context) {
         private const val PREFS = "watch_relay_settings"
         private const val KEY_MODE = "relayMode"
         private const val KEY_UPDATED_EPOCH_MILLIS = "relayModeUpdatedEpochMillis"
+        private const val KEY_AUTO_STOP_ON_TIMEOUT_ENABLED = "autoStopOnTimeoutEnabled"
 
         @Volatile
         private var instance: WatchRelaySettings? = null

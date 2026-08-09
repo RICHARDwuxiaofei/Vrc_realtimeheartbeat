@@ -18,6 +18,7 @@ import android.hardware.SensorManager
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.health.services.client.ExerciseClient
 import androidx.health.services.client.ExerciseUpdateCallback
@@ -80,6 +81,9 @@ class ExerciseForegroundService : Service() {
     private var lastWatchAckRequestedSampleEpochMillis = 0L
     private var lastBatteryRefreshMillis = 0L
     private var activeRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS
+    private var connectionMonitoringStartedElapsedMillis = SystemClock.elapsedRealtime()
+    private var connectionTimeoutTriggered = false
+    private var lastObservedAutoStopEnabled: Boolean? = null
 
     private val directHeartRateListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -355,7 +359,11 @@ class ExerciseForegroundService : Service() {
         )
         when (intent?.action) {
             ACTION_STOP -> requestEnd(intent.getStringExtra(EXTRA_REASON) ?: "USER")
-            ACTION_START -> startOrRestore(explicitStart = true)
+            ACTION_START -> {
+                connectionMonitoringStartedElapsedMillis = SystemClock.elapsedRealtime()
+                connectionTimeoutTriggered = false
+                startOrRestore(explicitStart = true)
+            }
             ACTION_UPDATE_RELAY_MODE -> applyUpdatedRelayMode()
             else -> startOrRestore(explicitStart = false)
         }
@@ -1174,6 +1182,19 @@ class ExerciseForegroundService : Service() {
                 setShowBadge(false)
             },
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                AUTO_STOP_NOTIFICATION_CHANNEL,
+                AppLocale.text(this, "连接超时提醒"),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = AppLocale.text(
+                    this@ExerciseForegroundService,
+                    "连接超时并自动停止后只提醒一次",
+                )
+                setShowBadge(false)
+            },
+        )
     }
 
     private fun startNotificationTicker() {
@@ -1184,8 +1205,41 @@ class ExerciseForegroundService : Service() {
                 val snapshot = store.state.value
                 getSystemService(NotificationManager::class.java)
                     .notify(NOTIFICATION_ID, buildNotification(snapshot.bpm))
+                checkConnectionTimeout(snapshot)
             }
         }
+    }
+
+    private fun checkConnectionTimeout(snapshot: ExerciseSessionSnapshot) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val enabled = relaySettings.autoStopOnTimeoutEnabled.value
+        if (lastObservedAutoStopEnabled != enabled) {
+            lastObservedAutoStopEnabled = enabled
+            connectionMonitoringStartedElapsedMillis = nowElapsed
+            connectionTimeoutTriggered = false
+        }
+        if (connectionTimeoutTriggered || !enabled) return
+        val relayStatus = RelayStatusStore.state.value
+        if (
+            !connectionTimedOut(
+                enabled = true,
+                active = snapshot.serviceRunning && snapshot.sessionState == ExerciseSessionState.ACTIVE,
+                monitoringStartedElapsedMillis = connectionMonitoringStartedElapsedMillis,
+                lastConnectedElapsedMillis = relayStatus.lastSuccessfulPcAckElapsedMillis
+                    ?.takeIf { it >= connectionMonitoringStartedElapsedMillis },
+                nowElapsedMillis = nowElapsed,
+            )
+        ) {
+            return
+        }
+        connectionTimeoutTriggered = true
+        showAutoStoppedNotification()
+        logger.warn(
+            "CONNECTION_TIMEOUT_AUTO_STOP",
+            "No successful PC acknowledgement was received for five minutes; stopping heart-rate relay",
+            serviceFields("CONNECTION_TIMEOUT_AUTO_STOP"),
+        )
+        requestEnd("CONNECTION_TIMEOUT_AUTO_STOP")
     }
 
     private fun buildNotification(bpm: Int?): Notification {
@@ -1223,6 +1277,31 @@ class ExerciseForegroundService : Service() {
             .build()
     }
 
+    private fun showAutoStoppedNotification() {
+        val openIntent = requireNotNull(packageManager.getLaunchIntentForPackage(packageName)).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            1,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(this, AUTO_STOP_NOTIFICATION_CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(AppLocale.text(this, "心率传输已自动停止"))
+            .setContentText(AppLocale.text(this, "连续 5 分钟未连通电脑；点按可重新打开应用"))
+            .setContentIntent(pendingIntent)
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(true)
+            .setCategory(Notification.CATEGORY_STATUS)
+            .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(AUTO_STOP_NOTIFICATION_ID, notification)
+    }
+
     companion object {
         private const val ACTION_START = "best.nagikokoro.watch6heartrateprobe.action.START_EXERCISE"
         private const val ACTION_STOP = "best.nagikokoro.watch6heartrateprobe.action.STOP_EXERCISE"
@@ -1230,7 +1309,9 @@ class ExerciseForegroundService : Service() {
             "best.nagikokoro.watch6heartrateprobe.action.UPDATE_RELAY_MODE"
         private const val EXTRA_REASON = "reason"
         private const val NOTIFICATION_CHANNEL = "exercise_hr_probe"
+        private const val AUTO_STOP_NOTIFICATION_CHANNEL = "exercise_hr_probe_auto_stop"
         private const val NOTIFICATION_ID = 6001
+        private const val AUTO_STOP_NOTIFICATION_ID = 6002
         private const val MIN_VALID_BPM = 20.0
         private const val MAX_VALID_BPM = 300.0
         private const val STALE_AFTER_MILLIS = 10_000L

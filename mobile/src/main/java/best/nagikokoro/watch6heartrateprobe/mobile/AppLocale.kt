@@ -85,6 +85,28 @@ internal object PhoneTranslations {
         "尚未设置电脑" to Translation("PC not configured", "PC未設定"),
         "等待心率" to Translation("Waiting for heart rate", "心拍数を待機中"),
         "心率运行状态" to Translation("Heart rate status", "心拍数ステータス"),
+        "不常用设置" to Translation("Less-used settings", "使用頻度の低い設定"),
+        "5 分钟未连接自动停止" to Translation(
+            "Stop after 5 minutes offline",
+            "5分間未接続で自動停止",
+        ),
+        "连续 5 分钟收不到电脑回执时停止手机发送，并同步让手表停止采集；超时通知只出现一次，可手动清除。" to Translation(
+            "Stops phone relay and watch sensing after 5 minutes without a PC acknowledgement. The timeout notification appears once and can be dismissed.",
+            "PC確認が5分間ない場合、スマートフォンの転送とWatchの測定を停止します。通知は1回のみで、手動で消去できます。",
+        ),
+        "连接超时提醒" to Translation("Connection timeout", "接続タイムアウト"),
+        "连接超时并自动停止后只提醒一次" to Translation(
+            "Notifies once after an automatic timeout stop",
+            "接続タイムアウトによる自動停止後に1回だけ通知します",
+        ),
+        "心率发送已自动停止" to Translation(
+            "Heart rate relay stopped automatically",
+            "心拍数転送を自動停止しました",
+        ),
+        "连续 5 分钟未连接电脑；点按可重新打开应用" to Translation(
+            "No PC connection for 5 minutes. Tap to reopen the app.",
+            "PCに5分間接続できませんでした。タップしてアプリを開きます。",
+        ),
         "每 5 秒显示当前心率和中转状态" to Translation(
             "Shows the current heart rate and relay status every 5 seconds",
             "現在の心拍数と転送状態を5秒ごとに表示",
@@ -224,6 +246,16 @@ internal object PhoneTranslations {
         "没有可连接的小米手环地址" to Translation("No Xiaomi Smart Band address is available to connect", "接続可能なXiaomi Smart Bandアドレスがありません"),
         "电脑 IP 未设置" to Translation("PC IP is not set", "PC IPが未設定"),
         "电脑回执内容不匹配" to Translation("PC acknowledgement did not match", "PC確認内容が一致しません"),
+        "电脑回执缺少匹配的序号或 BPM" to Translation(
+            "PC acknowledgement is missing the matching sequence or BPM",
+            "PC確認に一致するシーケンスまたはBPMがありません",
+        ),
+        "电脑对照 BPM" to Translation("PC-confirmed BPM", "PC確認BPM"),
+        "电脑已对照 " to Translation("PC matched ", "PC照合済み "),
+        "手表心率不是 1–300 的整数，已拒绝转发" to Translation(
+            "Watch heart rate is not an integer from 1 to 300; relay was rejected",
+            "Watchの心拍数が1～300の整数ではないため、転送を拒否しました",
+        ),
         "系统拒绝局域网 UDP（EPERM）。请检查“附近设备/局域网”权限和系统网络限制" to Translation(
             "The system denied LAN UDP (EPERM). Check Nearby devices/LAN permission and system network restrictions.",
             "システムがLAN UDP（EPERM）を拒否しました。付近のデバイス／LAN権限とネットワーク制限を確認してください。",

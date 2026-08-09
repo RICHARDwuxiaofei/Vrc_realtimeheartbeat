@@ -497,6 +497,7 @@ class HeartRateBridgeApp:
         self.listen_port = tk.StringVar(value=str(self.settings.listen_port))
         self.osc_port = tk.StringVar(value=str(self.settings.osc_port))
         self.forward_osc = tk.BooleanVar(value=self.settings.forward_osc)
+        self.forward_oyasumi = tk.BooleanVar(value=self.settings.forward_oyasumi)
         self.input_source_label = tk.StringVar(value=self.input_source_labels[self.settings.input_source])
         self.language_choice = tk.StringVar(value=self.language_options[self.settings.language])
         saved_ble_label = (
@@ -517,6 +518,9 @@ class HeartRateBridgeApp:
         self.receiver_text = self._localized_var("未启动")
         self.phone_text = self._localized_var("--")
         self.osc_text = self._localized_var("已开启" if self.settings.forward_osc else "已关闭")
+        self.oyasumi_text = self._localized_var(
+            "正在自动发现" if self.settings.forward_oyasumi else "已关闭"
+        )
         self.minimum_text = tk.StringVar(value="--")
         self.maximum_text = tk.StringVar(value="--")
         self.average_text = tk.StringVar(value="--")
@@ -757,6 +761,7 @@ class HeartRateBridgeApp:
         self._status_row(self.status_column, "输入引擎", self.receiver_text)
         self._status_row(self.status_column, "输入设备", self.phone_text)
         self._status_row(self.status_column, "VRChat OSC", self.osc_text)
+        self._status_row(self.status_column, "OyasumiVR", self.oyasumi_text)
 
         chart_card = RoundedCard(content, fill=PANEL)
         chart_card.pack(fill="x", pady=(14, 0))
@@ -890,9 +895,13 @@ class HeartRateBridgeApp:
             settings_panel, text="发送到 VRChat OSC", variable=self.forward_osc, command=self._update_osc_label,
         ).grid(row=1, column=4, columnspan=2, sticky="w", padx=(12, 20), pady=(0, 12))
         PillToggle(
+            settings_panel, text="发送到 OyasumiVR", variable=self.forward_oyasumi,
+            command=self._update_oyasumi_label,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=20, pady=(2, 12))
+        PillToggle(
             settings_panel, text="记录曲线与统计（诊断模式）",
-            variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode, width=520,
-        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=20, pady=(2, 14))
+            variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode,
+        ).grid(row=2, column=3, columnspan=3, sticky="w", padx=(6, 20), pady=(2, 12))
 
         self.start_button = RoundedButton(
             settings_panel,
@@ -1211,6 +1220,7 @@ class HeartRateBridgeApp:
     def start_receiver(self) -> None:
         if self.runtime is not None and self.runtime.running:
             return
+        self.oyasumi_text.set("正在自动发现" if self.forward_oyasumi.get() else "已关闭")
         try:
             listen_port = parse_port(self.listen_port.get())
             osc_port = parse_port(self.osc_port.get())
@@ -1219,6 +1229,7 @@ class HeartRateBridgeApp:
                 listen_port=listen_port,
                 osc_port=osc_port,
                 forward_osc=self.forward_osc.get(),
+                forward_oyasumi=self.forward_oyasumi.get(),
                 input_source=input_source,
                 ble_address=self.settings.ble_address,
                 ble_name=self.settings.ble_name,
@@ -1231,6 +1242,7 @@ class HeartRateBridgeApp:
                     listen_port=listen_port,
                     osc_port=osc_port,
                     forward_osc=self.forward_osc.get(),
+                    forward_oyasumi=self.forward_oyasumi.get(),
                     input_source=input_source,
                 ),
                 self._enqueue_event,
@@ -1276,6 +1288,7 @@ class HeartRateBridgeApp:
         self.listen_port_entry.configure(state="normal")
         self.osc_port_entry.configure(state="normal")
         self.receiver_text.set("已停止")
+        self.oyasumi_text.set("未启动")
         self.signal_text.set("接收器已停止")
         self.signal_label.configure(fg=MUTED)
         self._refresh_source_controls()
@@ -1453,6 +1466,18 @@ class HeartRateBridgeApp:
             return
         if kind == "direct_ready":
             self.receiver_text.set("BLE 直连引擎")
+            return
+        if kind == "oyasumi_target":
+            if not self.forward_oyasumi.get():
+                self.oyasumi_text.set("已关闭")
+                return
+            address = data.get("address")
+            if address:
+                self.oyasumi_text.set(str(address))
+                self._append_log(f"已通过 OSCQuery 发现 OyasumiVR：{address}")
+            else:
+                self.oyasumi_text.set("正在自动发现")
+                self._append_log("OyasumiVR OSCQuery 服务已离线，继续自动发现")
             return
         if kind == "ble_devices":
             self.ble_devices.clear()
@@ -1663,6 +1688,17 @@ class HeartRateBridgeApp:
         if self.runtime is not None:
             self.runtime.set_forward_osc(self.forward_osc.get())
         self.settings.forward_osc = self.forward_osc.get()
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self._append_log(f"保存设置失败：{exc}")
+
+    def _update_oyasumi_label(self) -> None:
+        enabled = self.forward_oyasumi.get()
+        self.oyasumi_text.set("正在自动发现" if enabled else "已关闭")
+        if self.runtime is not None:
+            self.runtime.set_forward_oyasumi(enabled)
+        self.settings.forward_oyasumi = enabled
         try:
             save_settings(self.settings)
         except OSError as exc:

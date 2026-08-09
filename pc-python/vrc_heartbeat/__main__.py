@@ -14,7 +14,9 @@ def self_test() -> None:
         b'{"type":"heart_rate","sequence":7,"sampleEpochMillis":1000,"bpm":72}'
     )
     assert packet.bpm == 72
-    assert b'"sequence":7' in build_ack(7, 2000)
+    ack = build_ack(7, 2000, 72)
+    assert b'"sequence":7' in ack
+    assert b'"bpm":72' in ack
     assert encode_message("/avatar/parameters/HR_Value", 72)
     assert encode_message("/avatar/parameters/HR_Hundreds", 0)
     assert encode_message("/avatar/parameters/HR_Tens", 7)

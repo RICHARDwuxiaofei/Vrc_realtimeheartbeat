@@ -19,8 +19,8 @@ android {
         applicationId = "best.nagikokoro.watch6heartrateprobe"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.2.2-beta.1"
     }
 
     flavorDimensions += "edition"

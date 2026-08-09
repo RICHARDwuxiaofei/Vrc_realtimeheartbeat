@@ -111,7 +111,11 @@ class MobileMainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         PhoneRelayRepository.refreshNetwork()
-        if (PhoneRelayRepository.isXiaomiMode() && hasXiaomiBlePermissions(this)) {
+        if (
+            PhoneRelayRepository.isXiaomiMode() &&
+            !PhoneRelayRepository.state.value.autoStopped &&
+            hasXiaomiBlePermissions(this)
+        ) {
             startXiaomiService(this, XiaomiHeartRateService.ACTION_START)
         }
     }
@@ -266,7 +270,7 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                 "Windows 接收器",
                 when {
                     !state.forwardingEnabled -> "已暂停发送到电脑"
-                    pcAlive -> "电脑已确认 · 每 ${state.forwardIntervalSeconds} 秒发送"
+                    pcAlive -> "电脑已对照 ${state.lastPcConfirmedBpm ?: "--"} BPM · 每 ${state.forwardIntervalSeconds} 秒发送"
                     else -> "等待电脑回执 · 每 ${state.forwardIntervalSeconds} 秒发送"
                 },
                 pcAlive && state.forwardingEnabled,
@@ -373,6 +377,7 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                         Metric("未转发样本", state.throttledCount.toString())
                         Metric("已发往电脑", state.forwardedCount.toString())
                         Metric("电脑确认", state.pcAckCount.toString())
+                        Metric("电脑对照 BPM", state.lastPcConfirmedBpm?.toString() ?: "--")
                         Metric("原始 BPM", state.watchRawBpm?.toString() ?: "--")
                         Metric("传感器精度", state.watchAccuracy ?: "--")
                         Metric("手表电量", state.watchBatteryPercent?.let { "$it%" } ?: "--")
@@ -411,6 +416,8 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
             )
+            SectionTitle("不常用设置")
+            AutoStopSettingsCard(state.autoStopOnTimeoutEnabled)
             LanguageCard(
                 selected = AppLocale.selected(context),
                 onSelect = onLanguageChange,
@@ -428,6 +435,34 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                 )
             }
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun AutoStopSettingsCard(enabled: Boolean) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CardElevated),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                Text("5 分钟未连接自动停止", fontWeight = FontWeight.Bold)
+                Text(
+                    "连续 5 分钟收不到电脑回执时停止手机发送，并同步让手表停止采集；超时通知只出现一次，可手动清除。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = PhoneRelayRepository::setAutoStopOnTimeoutEnabled,
+            )
         }
     }
 }

@@ -18,6 +18,7 @@ def test_old_settings_default_to_phone_relay():
     assert settings.listen_port == 9124
     assert settings.input_source == PHONE_RELAY
     assert settings.ble_address == ""
+    assert settings.forward_oyasumi is False
 
 
 def test_direct_ble_selection_and_device_round_trip():
@@ -34,6 +35,15 @@ def test_direct_ble_selection_and_device_round_trip():
     assert load_settings(path) == expected
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["input_source"] == XIAOMI_PC_BLE
+
+
+def test_oyasumi_forwarding_round_trip():
+    TEST_ROOT.mkdir(parents=True, exist_ok=True)
+    path = TEST_ROOT / "oyasumi-settings.json"
+
+    save_settings(AppSettings(forward_oyasumi=True), path)
+
+    assert load_settings(path).forward_oyasumi is True
 
 
 def test_unknown_source_is_safely_disabled():

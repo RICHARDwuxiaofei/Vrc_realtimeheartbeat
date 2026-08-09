@@ -14,6 +14,7 @@ object WatchRelayFrequencySync {
             .put("type", "relay_interval")
             .put("relayIntervalSeconds", settings.mode.value.intervalSeconds)
             .put("relayIntervalUpdatedEpochMillis", settings.updatedEpochMillis)
+            .put("autoStopOnTimeoutEnabled", settings.autoStopOnTimeoutEnabled.value)
             .put("watchEpochMillis", System.currentTimeMillis())
             .toString()
             .toByteArray(Charsets.UTF_8)
