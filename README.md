@@ -1,4 +1,4 @@
-# VRChat 实时心率桥
+# VRChat 实时心率桥 PR
 
 [![Build distributables](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/actions/workflows/build.yml/badge.svg)](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/actions/workflows/build.yml)
 
