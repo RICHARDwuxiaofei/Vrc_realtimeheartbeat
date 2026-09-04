@@ -8,7 +8,7 @@
 python .\pc-python\run_app.py
 ```
 
-程序默认使用“手机中转”并监听 UDP `9123`，向 VRChat `127.0.0.1:9000` 发送 OSC，并自动返回手机要求的 `pc_ack`。也可以切换为“电脑直连小米手环（实验）”，直接用 Windows BLE 订阅标准心率通知，不经过手机。源码运行需要安装 `qrcode[pil]` 和 `bleak`，发布的单文件 EXE 已包含这两个组件。
+程序默认使用“手机中转”并监听 UDP `9123`，向 VRChat `127.0.0.1:9000` 发送 OSC，并自动返回手机要求的 `pc_ack`。也可以切换为“电脑直连小米手环（实验）”，直接用 Windows BLE 订阅标准心率通知，不经过手机。源码运行需要安装 `qrcode[pil]`、`bleak` 和 `zeroconf`，发布的单文件 EXE 已包含这些组件。
 
 只有 `type=heart_rate` 的真实数据会进入 Avatar 参数；`phone_test` 和 `relay_test` 只验证链路和回执。
 
@@ -44,13 +44,25 @@ python .\pc-python\run_app.py
 
 每次收到真实心率时，程序都严格按照 `HR_Value → HR_Hundreds → HR_Tens → HR_Ones` 的顺序发送四条三位数显示消息。链路测试包不会发送这些参数。
 
+## OyasumiVR
+
+“发送到 OyasumiVR”开关默认关闭。启用后，接收器会浏览局域网中的
+`_oscjson._tcp.local.` 服务；不需要该功能的用户不会启动发现或发送 OyasumiVR
+数据。发现名称为 `OyasumiVR` 的 OSCQuery 服务后，它会：
+
+1. 请求 `/?HOST_INFO`，读取当前 `OSC_IP`、动态 `OSC_PORT` 和传输协议。
+2. 请求 `/OyasumiVR/HeartRate`，确认节点为可写的 OSC Int。
+3. 对每个真实 `heart_rate` 样本，向发现的 UDP 端口发送 `/OyasumiVR/HeartRate` Int32 BPM。
+
+OyasumiVR 重启导致端口变化时会自动重新发现；VRChat 的固定端口输出保持独立。界面“链路状态”中的 `OyasumiVR` 一行会显示当前发现的目标地址。若 Windows 防火墙询问网络访问权限，需要允许本机/专用网络上的 mDNS（UDP 5353）、OSCQuery HTTP 和动态 OSC UDP 通信。
+
 ## 测试
 
 ```powershell
 python -m pytest .\pc-python\tests -q -p no:cacheprovider
 ```
 
-测试包括 JSON 协议校验、非法数据、回执、OSC Int32 编码、三位数拆分和发送顺序、超时失效、本地心跳节拍和真实 UDP 回环。
+测试包括 JSON 协议校验、非法数据、回执、OSC Int32 编码、三位数拆分和发送顺序、超时失效、本地心跳节拍、OSCQuery 目标解析、OyasumiVR BPM 输出和真实 UDP 回环。
 
 ## 构建单文件 EXE
 

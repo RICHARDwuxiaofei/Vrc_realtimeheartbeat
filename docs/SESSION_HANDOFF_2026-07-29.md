@@ -29,7 +29,7 @@
 - 稳定安装路径已经覆盖为圆角日志版：
 
 ```text
-C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.exe
+%LOCALAPPDATA%\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.exe
 ```
 
 - 新增简体中文、English、日本語三语界面：
@@ -50,13 +50,13 @@ C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-
 - 旧安装版备份为：
 
 ```text
-C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.pre-i18n-20260729.exe
+%LOCALAPPDATA%\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.pre-i18n-20260729.exe
 ```
 
 ### Android
 
-- Watch6 Classic `SM-R960`：`10.163.22.1:40999`
-- Galaxy S24 Ultra `SM-S928B`：USB 序列号 `R5CX81QGFAV`
+- Watch6 Classic `SM-R960`：无线 ADB 临时地址（端口会变化）
+- Galaxy S24 Ultra `SM-S928B`：USB ADB
 - 手表和手机均已安装 production/diagnostic 两包，四包均为 `1.2.0 (3)`。
 - 诊断模拟链路真机通过：
   - 手表诊断版发送 62 BPM，检查时已发送 9 条。
@@ -197,3 +197,58 @@ Send live heart rate from Galaxy Watch or Xiaomi Smart Band to VRChat avatars th
 2. 如需双重确认，在手机正式版/诊断版各打开一次扫码页，确认肉眼观察不到任何扫描线动画。
 
 在用户确认以上两项以及许可证署名信息前，仍不得 commit、merge、push 或发布。
+
+## 2026-07-29 持续心率状态通知
+
+- 新功能分支：`codex/persistent-heart-rate-notifications`，基于已发布的 `v1.2.0` / `c8df241`。
+- 手机新增 `PhoneRelayNotificationService`：
+  - `connectedDevice` 前台服务，通知 ID `7301`，低优先级、静音、持续显示。
+  - 每 5 秒读取 `PhoneRelayRepository.state` 并更新 BPM、运行/暂停状态、Galaxy Watch
+    或小米手环来源，以及电脑已确认/等待回执/未配置状态。
+  - 心率数据超过 15 秒后改为“等待心率”，不会把旧 BPM 冒充当前值。
+  - 点击通知返回对应 production/diagnostic 应用。
+- 手表复用 `ExerciseForegroundService` 的健康前台通知：
+  - 新增独立 5 秒通知 ticker。
+  - 显示新鲜 BPM、运行/启动/暂停/停止状态及 1/5/10 秒发送模式。
+- 手机和手表均声明并在 Android 13+ 请求 `POST_NOTIFICATIONS`；拒绝不会阻断核心链路。
+- 新增手机与手表通知状态单测；四变体单测合计 94 项全部通过：
+  - Watch production：25 tests
+  - Watch diagnostic：27 tests
+  - Phone production：21 tests
+  - Phone diagnostic：21 tests
+  - 0 failure、0 error；四变体 Lint 均为 0 error，四个 debug APK assemble 成功。
+- SM-S928B 真机验收：
+  - production/diagnostic 两包安装成功，通知可共存。
+  - 返回桌面后两个 `PhoneRelayNotificationService` 仍在运行。
+  - 系统记录为 `ONGOING_EVENT | NO_CLEAR | FOREGROUND_SERVICE | SILENT`。
+  - 实测连续更新时间戳差为 `5013 ms`、`5006 ms`。
+  - 暂停状态和恢复后的“运行中”均能在下一次刷新正确显示。
+- 本轮手表原无线 ADB 地址已失联；随后 mDNS 短暂广播了另一个临时地址，
+  但 TCP 端口明确拒绝连接，两个最新 APK 的安装命令均未触及设备，
+  因此最新手表 APK 尚未重新安装。手表端代码已通过两变体单测、Lint 和 assemble，
+  仍需在手表重新上线后安装并用 `dumpsys notification --noredact` 验证 5 秒时间戳刷新。
+
+## 2026-07-29 手机首页信息层级调整
+
+- 正式版与诊断版共用页面已按日常使用频率重排：
+  1. 当前心率
+  2. 发送控制与 1/5/10 秒间隔
+  3. 手表、手机、Windows 链路状态
+  4. 电脑地址与扫码配置
+  5. 心率来源与诊断工具
+  6. 使用说明、语言、版本号
+- 语言卡已移动到页面最末端，仅位于版本号之前。
+- 英语版发送卡左右状态改为等宽区域，右侧状态右对齐，修复
+  `Galaxy Watch → Phone` 与 `Waiting for watch report` 视觉粘连。
+- 手机 production/diagnostic 单测、Lint 和 assemble 重新通过，两包均已覆盖安装到
+  SM-S928B；中文正式版、英文正式版与中文诊断版均完成真机截图验收。
+
+## 2026-07-29 文档收尾
+
+- README 的开发文档入口新增
+  `docs/DEVELOPMENT_RETROSPECTIVE_2026-07-29.md`。
+- 新文档按现象、根因、解决办法和经验整理了从试玩版到 v1.2.0 及后续本地改动中的
+  Wear OS 息屏批处理、ADB/mDNS、UDP ACK、四 flavor、PyInstaller 沙箱、扫码动画、
+  旋转表圈、三端 i18n、UI 信息层级、签名和发布等问题，可直接作为项目开发日志素材。
+- 本轮持续通知、手机首页重排和文档改动已提交并纳入本地 `main`；
+  未 push，也未发布新版本。

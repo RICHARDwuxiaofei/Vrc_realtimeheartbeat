@@ -35,28 +35,29 @@ git diff --stat
 Android SDK ADB：
 
 ```text
-C:\Users\wrq18\AppData\Local\Android\Sdk\platform-tools\adb.exe
+%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe
 ```
 
 本轮已确认：
 
 ```text
-R5CX81QGFAV          SM-S928B 手机，USB ADB
-10.25.24.253:43019   SM-R960 Galaxy Watch6，酒店 Wi-Fi ADB
+<PHONE_USB_SERIAL>   SM-S928B 手机，USB ADB
+<WATCH_IP>:<ADB_PORT>   SM-R960 Galaxy Watch6，酒店 Wi-Fi ADB
 ```
 
 酒店网络结论：
 
-- `10.25.24.253:43019` TCP 可达。
-- `adb connect 10.25.24.253:43019` 成功。
+- `<WATCH_IP>:<ADB_PORT>` TCP 可达。
+- `adb connect <WATCH_IP>:<ADB_PORT>` 成功。
 - 酒店 AP 没有阻止电脑到手表的 ADB，也没有阻止手机到电脑的 UDP。
-- 手表还会通过 mDNS 出现第二个序列，所有自动化必须固定使用用户给出的 `10.25.24.253:43019`，避免 `more than one device`。
+- 手表还会通过 mDNS 出现第二个序列，所有自动化必须固定使用当时确认的
+  `<WATCH_IP>:<ADB_PORT>`，避免 `more than one device`。
 
 已安装：
 
 - 手表：本轮 `app-diagnostic-debug.apk`，版本 `1.1.0 (2)`，覆盖了此前的 `1.0.0`。
 - 手机：本轮 `mobile-debug.apk`，版本 `1.1.0 (2)`。
-- 手机电脑目标已从旧地址 `192.168.100.139:9123` 改为酒店电脑 `10.25.25.175:9123`，发送间隔仍为 1 秒。
+- 手机电脑目标已改为当时酒店电脑的 `<PC_LAN_IP>:9123`，发送间隔仍为 1 秒。
 - 手表模拟器已通过 UI 停止，停止日志为 `SIMULATED_HEART_RATE_STOPPED sentCount=135`，停止后没有新发送。
 
 ## 4. 已实现功能
@@ -124,7 +125,7 @@ app/src/diagnostic/java/.../MainActivity.kt
 ### 第一轮：Watch → Phone
 
 - 手表 UI 在约 15 秒内从 60–80 BPM 生成并发送 15 条。
-- 手表发现附近节点 `Richard 的 S24 Ultra`。
+- 手表发现附近的 Galaxy S24 Ultra 节点。
 - 每条均记录 `PHONE_RELAY_MESSAGE_QUEUED`。
 - 手机收到后尝试向旧电脑地址发 UDP，因电脑未监听而超时；这证明 Watch → Phone 已成立。
 
@@ -133,7 +134,7 @@ app/src/diagnostic/java/.../MainActivity.kt
 执行前将手机目标改为当前电脑：
 
 ```text
-10.25.25.175:9123
+<PC_LAN_IP>:9123
 ```
 
 电脑使用仓库 `BridgeRuntime` 启动 15 秒无 OSC 的 UDP 接收验证：
@@ -157,7 +158,7 @@ app/src/diagnostic/java/.../MainActivity.kt
 
 ```powershell
 $env:JAVA_HOME='D:\ANDORID\jbr'
-$env:ANDROID_HOME='C:\Users\wrq18\AppData\Local\Android\Sdk'
+$env:ANDROID_HOME="$env:LOCALAPPDATA\Android\Sdk"
 .\gradlew.bat `
   :app:testDiagnosticDebugUnitTest `
   :app:testProductionDebugUnitTest `
@@ -274,7 +275,7 @@ git diff --check
 git status --short
 
 $env:JAVA_HOME='D:\ANDORID\jbr'
-$env:ANDROID_HOME='C:\Users\wrq18\AppData\Local\Android\Sdk'
+$env:ANDROID_HOME="$env:LOCALAPPDATA\Android\Sdk"
 .\gradlew.bat `
   :app:testDiagnosticDebugUnitTest `
   :app:testProductionDebugUnitTest `

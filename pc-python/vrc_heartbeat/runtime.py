@@ -9,6 +9,11 @@ from typing import Any, Callable
 from .engine import BridgeEngine
 from .input_sources import PHONE_RELAY, XIAOMI_PC_BLE
 from .osc import encode_message
+from .oyasumi import (
+    OYASUMI_HEART_RATE_ADDRESS,
+    OyasumiOscQueryDiscovery,
+    OyasumiOscTarget,
+)
 from .protocol import HeartRatePacket, ProtocolError, build_ack, packet_latency_ms, parse_packet
 
 
@@ -22,6 +27,7 @@ class RuntimeConfig:
     osc_host: str = "127.0.0.1"
     osc_port: int = 9000
     forward_osc: bool = True
+    forward_oyasumi: bool = False
     input_source: str = PHONE_RELAY
 
 
@@ -34,6 +40,8 @@ class BridgeRuntime:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._forward_osc = config.forward_osc
+        self._forward_oyasumi = config.forward_oyasumi
+        self._oyasumi_discovery: OyasumiOscQueryDiscovery | None = None
         self._diagnostic_mode = False
         self._engine = BridgeEngine(self._send_osc)
         self._engine_lock = threading.RLock()
@@ -71,6 +79,8 @@ class BridgeRuntime:
             self._engine.start()
         self._thread = threading.Thread(target=self._run, name="heart-rate-udp", daemon=True)
         self._thread.start()
+        if self._forward_oyasumi:
+            self._start_oyasumi_discovery()
         if self.config.input_source == PHONE_RELAY:
             self._emit("listening", port=self.bound_port)
         else:
@@ -79,11 +89,28 @@ class BridgeRuntime:
     def set_forward_osc(self, enabled: bool) -> None:
         self._forward_osc = bool(enabled)
 
+    @property
+    def forward_oyasumi_enabled(self) -> bool:
+        return self._forward_oyasumi
+
+    def set_forward_oyasumi(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._forward_oyasumi:
+            return
+        self._forward_oyasumi = enabled
+        if not self.running:
+            return
+        if enabled:
+            self._start_oyasumi_discovery()
+        else:
+            self._stop_oyasumi_discovery()
+
     def set_diagnostic_mode(self, enabled: bool) -> None:
         self._diagnostic_mode = bool(enabled)
 
     def stop(self) -> None:
         self._stop.set()
+        self._stop_oyasumi_discovery()
         receiver = self._receiver
         if receiver is not None:
             receiver.close()
@@ -157,6 +184,8 @@ class BridgeRuntime:
         now_ms = _now_ms()
         with self._engine_lock:
             result = self._engine.accept(packet, now_ms)
+        if result.kind == "heart_rate":
+            self._send_oyasumi_heart_rate(packet.bpm)
         self._emit(
             "packet",
             packet=packet,
@@ -186,9 +215,19 @@ class BridgeRuntime:
             now_ms = _now_ms()
             try:
                 packet = parse_packet(data)
-                receiver.sendto(build_ack(packet.sequence, now_ms, self._diagnostic_mode), sender)
+                receiver.sendto(
+                    build_ack(
+                        packet.sequence,
+                        now_ms,
+                        packet.bpm,
+                        self._diagnostic_mode,
+                    ),
+                    sender,
+                )
                 with self._engine_lock:
                     result = self._engine.accept(packet, now_ms)
+                if result.kind == "heart_rate":
+                    self._send_oyasumi_heart_rate(packet.bpm)
                 self._emit(
                     "packet",
                     packet=packet,
@@ -215,6 +254,41 @@ class BridgeRuntime:
             return
         packet = encode_message(address, value)
         self._osc_socket.sendto(packet, (self.config.osc_host, self.config.osc_port))
+
+    def _send_oyasumi_heart_rate(self, bpm: int) -> None:
+        if not self._forward_oyasumi:
+            return
+        discovery = self._oyasumi_discovery
+        target = discovery.target if discovery is not None else None
+        if target is None:
+            return
+        packet = encode_message(OYASUMI_HEART_RATE_ADDRESS, bpm)
+        try:
+            self._osc_socket.sendto(packet, (target.host, target.port))
+        except OSError as exc:
+            self._emit("error", message=f"OyasumiVR OSC 发送失败：{exc}")
+
+    def _start_oyasumi_discovery(self) -> None:
+        if self._oyasumi_discovery is not None:
+            return
+        discovery = OyasumiOscQueryDiscovery(self._on_oyasumi_target)
+        self._oyasumi_discovery = discovery
+        try:
+            discovery.start()
+        except Exception as exc:
+            self._oyasumi_discovery = None
+            self._emit("error", message=f"OyasumiVR OSCQuery 发现启动失败：{exc}")
+
+    def _stop_oyasumi_discovery(self) -> None:
+        discovery, self._oyasumi_discovery = self._oyasumi_discovery, None
+        if discovery is not None:
+            discovery.stop()
+
+    def _on_oyasumi_target(self, target: OyasumiOscTarget | None) -> None:
+        self._emit(
+            "oyasumi_target",
+            address=f"{target.host}:{target.port}" if target is not None else None,
+        )
 
     def _emit(self, kind: str, **data: Any) -> None:
         try:

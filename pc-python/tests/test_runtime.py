@@ -29,6 +29,7 @@ def test_udp_runtime_returns_matching_ack_and_reports_packet():
         ack, _ = client.recvfrom(1024)
         ack_payload = json.loads(ack)
         assert ack_payload["sequence"] == 77
+        assert ack_payload["bpm"] == 72
         assert ack_payload["diagnosticMode"] is False
         assert received.wait(2)
         packet_event = next(data for kind, data in events if kind == "packet")

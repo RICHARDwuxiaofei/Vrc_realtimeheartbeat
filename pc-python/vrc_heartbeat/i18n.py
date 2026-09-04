@@ -101,6 +101,16 @@ _EXACT: Final[dict[str, tuple[str, str]]] = {
     "手机 UDP 端口": ("Phone UDP port", "スマートフォンUDPポート"),
     "VRChat OSC 端口": ("VRChat OSC port", "VRChat OSCポート"),
     "发送到 VRChat OSC": ("Send to VRChat OSC", "VRChat OSCへ送信"),
+    "发送到 OyasumiVR": ("Send to OyasumiVR", "OyasumiVRへ送信"),
+    "正在自动发现": ("Auto-discovering", "自動検出中"),
+    "已通过 OSCQuery 发现 OyasumiVR：": (
+        "Discovered OyasumiVR through OSCQuery: ",
+        "OSCQueryでOyasumiVRを検出：",
+    ),
+    "OyasumiVR OSCQuery 服务已离线，继续自动发现": (
+        "OyasumiVR OSCQuery went offline; continuing discovery",
+        "OyasumiVR OSCQueryがオフラインになりました。検出を継続します",
+    ),
     "记录曲线与统计（诊断模式）": ("Record chart and statistics (diagnostic mode)", "グラフと統計を記録（診断モード）"),
     "启动接收": ("Start receiver", "受信を開始"),
     "停止": ("Stop", "停止"),

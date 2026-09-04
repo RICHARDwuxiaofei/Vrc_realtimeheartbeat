@@ -19,8 +19,6 @@ VRChat OSC 参数等技术标识不会被翻译。
 
 请从 [GitHub Releases](https://github.com/RICHARDwuxiaofei/Vrc_realtimeheartbeat/releases/latest) 下载最新版。
 
-> 下表是 v1.2.0 的文件命名。当前公开的 v1.1.0 仍使用单个 `phone-debug.apk`，且两只手表 APK 不能共存；待 v1.2.0 验证发布后才使用下面的双包组合。
-
 | 文件 | 安装位置 | 用途 |
 | --- | --- | --- |
 | `VrcRealtimeHeartbeat-Python.exe` | Windows | 接收心率并发送 VRChat OSC |
@@ -28,7 +26,7 @@ VRChat OSC 参数等技术标识不会被翻译。
 | `Vrc_realtimeheartbeat-watch-production.apk` | Galaxy Watch | 日常使用的正式功能版，推荐安装 |
 | `Vrc_realtimeheartbeat-watch-diagnostic.apk` | Galaxy Watch | 排错与完整链路测试专用 |
 | `Vrc_realtimeheartbeat-phone-diagnostic.apk` | Android 手机 | 与手表诊断版配套的独立中转应用 |
-| `SHA256SUMS.txt` | 任意 | 校验下载文件是否完整 |
+| `SHA256SUMS-Android.txt` / `SHA256SUMS-Windows.txt` | 任意 | 校验下载文件是否完整 |
 
 Windows ZIP 包包含 EXE、使用说明和校验文件；只想直接运行时下载单独的 EXE 即可。
 
@@ -67,6 +65,10 @@ Windows 端使用与手机一致的圆角深色卡片界面；按钮、输入框
 Windows 程序会把运行事件和异常堆栈写入 `%LOCALAPPDATA%\VrcRealtimeHeartbeat\logs` 下的按日日志，默认保留 14 天。界面底部显示当前文件路径，并提供“打开日志文件夹”按钮。
 
 Galaxy Watch Classic 可以使用旋转表圈滚动正式版和诊断版页面，也可以直接触摸滑动。
+
+手机和手表在心率中转运行时会显示持续状态通知。通知每 5 秒更新当前 BPM 和运行状态；
+手机还会显示心率来源及电脑是否已回执，手表会显示当前发送频率。Android 13 及更高版本
+首次启动会请求通知权限；如果拒绝，心率采集和转发仍可运行，但通知栏不会显示状态。
 
 ## 小米手环
 
@@ -135,6 +137,7 @@ Wear OS 的无线调试端口会在重新启用或重启后变化。请以手表
 ## 版本与开发文档
 
 - [更新日志](CHANGELOG.md)
+- [开发复盘与项目日志素材](docs/DEVELOPMENT_RETROSPECTIVE_2026-07-29.md)
 - [功耗优化与实测](docs/POWER_OPTIMIZATION.md)
 - [后台与续航测试指南](BACKGROUND_TEST_GUIDE.md)
 - [新电脑开发交接](docs/NEW_PC_HANDOFF.md)

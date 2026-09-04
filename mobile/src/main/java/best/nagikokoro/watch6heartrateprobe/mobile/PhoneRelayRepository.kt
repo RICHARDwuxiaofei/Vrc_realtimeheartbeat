@@ -40,9 +40,12 @@ data class PhoneRelayState(
     val watchRelayIntervalSeconds: Int? = null,
     val watchRelayMode: String? = null,
     val lastPcAckMillis: Long? = null,
+    val lastPcConfirmedBpm: Int? = null,
     val lastError: String = "--",
     val forwarding: Boolean = false,
     val forwardingEnabled: Boolean = true,
+    val autoStopOnTimeoutEnabled: Boolean = true,
+    val autoStopped: Boolean = false,
     val forwardIntervalSeconds: Int = 5,
     val forwardIntervalUpdatedEpochMillis: Long = 0L,
     val throttledCount: Long = 0,
@@ -70,6 +73,9 @@ object PhoneRelayRepository {
     private var lastHeartRateForwardElapsed = 0L
     private var lastWatchDiagnosticNodeId: String? = null
     private var lastWatchDiagnosticMode: Boolean? = null
+    private var pcMonitoringStartedElapsedMillis: Long? = null
+    private var lastPcConnectedElapsedMillis: Long? = null
+    private var autoStopTriggered = false
     private val xiaomiSequence = AtomicLong(System.currentTimeMillis())
     private val mutableState = MutableStateFlow(PhoneRelayState())
     val state = mutableState.asStateFlow()
@@ -87,6 +93,8 @@ object PhoneRelayRepository {
                 networkType = networkType(context),
                 vpnActive = isVpnActive(context),
                 forwardingEnabled = prefs.getBoolean("forwardingEnabled", true),
+                autoStopOnTimeoutEnabled = prefs.getBoolean("autoStopOnTimeoutEnabled", true),
+                autoStopped = prefs.getBoolean("autoStopped", false),
                 forwardIntervalSeconds = SyncedRelayInterval.normalize(
                     prefs.getInt("forwardIntervalSeconds", 5),
                 ),
@@ -227,7 +235,9 @@ object PhoneRelayRepository {
         val context = appContext ?: return
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
             putBoolean("forwardingEnabled", enabled)
+            putBoolean("autoStopped", false)
         }
+        resetPcTimeoutMonitoring()
         if (!enabled) {
             synchronized(pendingForwardLock) { pendingForwards.clear() }
         } else {
@@ -236,6 +246,7 @@ object PhoneRelayRepository {
         update {
             it.copy(
                 forwardingEnabled = enabled,
+                autoStopped = false,
                 forwarding = if (enabled) it.forwarding else false,
                 diagnosticRunning = if (enabled) it.diagnosticRunning else false,
                 diagnosticStatus = if (!enabled && it.diagnosticRunning) {
@@ -246,6 +257,30 @@ object PhoneRelayRepository {
                 lastError = "--",
             )
         }
+        if (enabled) {
+            PhoneRelayNotificationService.requestStart(context)
+            if (isXiaomiMode()) {
+                runCatching {
+                    androidx.core.content.ContextCompat.startForegroundService(
+                        context,
+                        android.content.Intent(context, XiaomiHeartRateService::class.java)
+                            .setAction(XiaomiHeartRateService.ACTION_START),
+                    )
+                }.onFailure { failure ->
+                    update { it.copy(lastError = "恢复小米手环连接失败：${failure.message}") }
+                }
+            }
+        }
+    }
+
+    fun setAutoStopOnTimeoutEnabled(enabled: Boolean) {
+        val context = appContext ?: return
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putBoolean("autoStopOnTimeoutEnabled", enabled)
+        }
+        if (!enabled) resetPcTimeoutMonitoring()
+        update { it.copy(autoStopOnTimeoutEnabled = enabled, lastError = "--") }
+        syncAutoStopSettingToWatch(context)
     }
 
     @Synchronized
@@ -270,7 +305,13 @@ object PhoneRelayRepository {
         if (diagnosticMode) {
             Log.i(TAG, "Watch sample accepted type=${json.optString("type")} sequence=$sequence source=$sourceNodeId")
         }
-        val bpm = json.optInt("bpm", -1).takeIf { it > 0 }
+        val messageType = json.optString("type")
+        val bpm = HeartRatePayloadContract.exactBpm(json.opt("bpm"))
+        if (messageType == "heart_rate" && bpm == null) {
+            update { it.copy(lastError = "手表心率不是 1–300 的整数，已拒绝转发") }
+            return
+        }
+        if (bpm != null) json.put("bpm", bpm)
         val sampleMillis = json.optLong("sampleEpochMillis", 0L).takeIf { it > 0 }
         val watchRelayInterval = json.optInt("watchRelayIntervalSeconds", 0).takeIf { it in 1..30 }
         val watchRelayIntervalUpdatedEpochMillis =
@@ -332,7 +373,7 @@ object PhoneRelayRepository {
                 lastError = "--",
             )
         }
-        val isRealHeartRate = json.optString("type") == "heart_rate"
+        val isRealHeartRate = messageType == "heart_rate"
         syncDiagnosticModeToWatch(context, sourceNodeId, diagnosticMode)
         if (isRealHeartRate && !shouldForwardHeartRate()) {
             update { it.copy(throttledCount = it.throttledCount + 1) }
@@ -532,8 +573,16 @@ object PhoneRelayRepository {
         }
         if (target.targetIp.isBlank()) {
             update { it.copy(lastError = "请先填写电脑 IP") }
+            if (isHeartRate) recordPcConnectionResult(context, connected = false)
             if (watchNodeId != null && watchAckRequested) {
-                sendWatchAck(context, watchNodeId, json.optLong("sequence"), false, "电脑 IP 未设置")
+                sendWatchAck(
+                    context,
+                    watchNodeId,
+                    json.optLong("sequence"),
+                    false,
+                    null,
+                    "电脑 IP 未设置",
+                )
             }
             return
         }
@@ -591,7 +640,9 @@ object PhoneRelayRepository {
     private fun performForward(request: PendingForward) {
         val context = appContext ?: return
         val sequence = request.json.optLong("sequence")
+        val expectedBpm = HeartRatePayloadContract.exactBpm(request.json.opt("bpm"))
         var pcAck = false
+        var confirmedBpm: Int? = null
         var error = ""
         try {
             if (!mutableState.value.forwardingEnabled) {
@@ -614,9 +665,21 @@ object PhoneRelayRepository {
                 val ackPacket = DatagramPacket(ackBuffer, ackBuffer.size)
                 socket.receive(ackPacket)
                 val ack = JSONObject(String(ackPacket.data, 0, ackPacket.length, Charsets.UTF_8))
-                pcAck = ack.optString("type") == "pc_ack" &&
-                    ack.optLong("sequence", Long.MIN_VALUE) == sequence
-                if (!pcAck) error = "电脑回执内容不匹配"
+                confirmedBpm = HeartRatePayloadContract.exactBpm(ack.opt("bpm"))
+                pcAck = HeartRatePayloadContract.acknowledgementMatches(
+                    type = ack.optString("type"),
+                    sequence = ack.optLong("sequence", Long.MIN_VALUE),
+                    expectedSequence = sequence,
+                    bpm = confirmedBpm,
+                    expectedBpm = expectedBpm,
+                )
+                if (!pcAck) {
+                    error = if (expectedBpm != null && confirmedBpm != null && confirmedBpm != expectedBpm) {
+                        "三端心率不一致：手机发送 $expectedBpm BPM，电脑确认 $confirmedBpm BPM"
+                    } else {
+                        "电脑回执缺少匹配的序号或 BPM"
+                    }
+                }
                 if (ack.has("diagnosticMode")) {
                     val requestedMode = ack.optBoolean("diagnosticMode", false)
                     if (requestedMode != mutableState.value.diagnosticMode) {
@@ -631,7 +694,10 @@ object PhoneRelayRepository {
                     if (nodeId != null) syncDiagnosticModeToWatch(context, nodeId, requestedMode)
                 }
                 if (mutableState.value.diagnosticMode || request.diagnostic) {
-                    Log.i(TAG, "PC acknowledgement sequence=$sequence matched=$pcAck")
+                    Log.i(
+                        TAG,
+                        "PC acknowledgement sequence=$sequence expectedBpm=$expectedBpm confirmedBpm=$confirmedBpm matched=$pcAck",
+                    )
                 }
             }
         } catch (failure: Throwable) {
@@ -648,10 +714,12 @@ object PhoneRelayRepository {
             Log.e(TAG, "UDP forwarding failed sequence=$sequence", failure)
         }
         val ackMillis = if (pcAck) System.currentTimeMillis() else null
+        if (request.isHeartRate) recordPcConnectionResult(context, connected = pcAck)
         update {
             it.copy(
                 pcAckCount = it.pcAckCount + if (pcAck) 1 else 0,
                 lastPcAckMillis = ackMillis ?: it.lastPcAckMillis,
+                lastPcConfirmedBpm = if (pcAck) confirmedBpm else it.lastPcConfirmedBpm,
                 lastError = error.ifBlank { "--" },
                 diagnosticRunning = if (request.diagnostic) false else it.diagnosticRunning,
                 diagnosticStatus = if (!request.diagnostic) {
@@ -664,11 +732,25 @@ object PhoneRelayRepository {
             )
         }
         if (request.watchNodeId != null && request.watchAckRequested) {
-            sendWatchAck(context, request.watchNodeId, sequence, pcAck, error)
+            sendWatchAck(
+                context,
+                request.watchNodeId,
+                sequence,
+                pcAck,
+                confirmedBpm.takeIf { pcAck },
+                error,
+            )
         }
     }
 
-    private fun sendWatchAck(context: Context, nodeId: String, sequence: Long, pcAck: Boolean, error: String) {
+    private fun sendWatchAck(
+        context: Context,
+        nodeId: String,
+        sequence: Long,
+        pcAck: Boolean,
+        confirmedBpm: Int?,
+        error: String,
+    ) {
         val payload = JSONObject()
             .put("version", 1)
             .put("type", "phone_ack")
@@ -682,9 +764,11 @@ object PhoneRelayRepository {
                 "relayIntervalUpdatedEpochMillis",
                 mutableState.value.forwardIntervalUpdatedEpochMillis,
             )
-            .toString()
+            .put("autoStopOnTimeoutEnabled", mutableState.value.autoStopOnTimeoutEnabled)
+        if (confirmedBpm != null) payload.put("confirmedBpm", confirmedBpm)
+        val bytes = payload.toString()
             .toByteArray(Charsets.UTF_8)
-        Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.ACK_PATH, payload)
+        Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.ACK_PATH, bytes)
             .addOnSuccessListener {
                 if (mutableState.value.diagnosticMode) {
                     Log.i(TAG, "Phone acknowledgement queued to watch node=$nodeId sequence=$sequence pcAck=$pcAck")
@@ -775,6 +859,7 @@ object PhoneRelayRepository {
             .put("type", "relay_interval")
             .put("relayIntervalSeconds", current.forwardIntervalSeconds)
             .put("relayIntervalUpdatedEpochMillis", current.forwardIntervalUpdatedEpochMillis)
+            .put("autoStopOnTimeoutEnabled", current.autoStopOnTimeoutEnabled)
             .put("phoneEpochMillis", System.currentTimeMillis())
             .toString()
             .toByteArray(Charsets.UTF_8)
@@ -805,6 +890,96 @@ object PhoneRelayRepository {
             .addOnFailureListener { failure ->
                 update { it.copy(lastError = "查找手表同步节点失败：${failure.message}") }
             }
+    }
+
+    private fun syncAutoStopSettingToWatch(context: Context) {
+        val current = mutableState.value
+        val payload = JSONObject()
+            .put("version", 1)
+            .put("type", "auto_stop_timeout")
+            .put("autoStopOnTimeoutEnabled", current.autoStopOnTimeoutEnabled)
+            .put("phoneEpochMillis", System.currentTimeMillis())
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        val knownNodeId = current.watchNodeId.takeUnless { it == "--" }
+
+        fun send(nodeId: String) {
+            Wearable.getMessageClient(context).sendMessage(nodeId, RelayProtocol.CONTROL_PATH, payload)
+                .addOnFailureListener { failure ->
+                    update { it.copy(lastError = "同步手表超时停止设置失败：${failure.message}") }
+                }
+        }
+
+        if (knownNodeId != null) {
+            send(knownNodeId)
+            return
+        }
+        Wearable.getCapabilityClient(context)
+            .getCapability(RelayProtocol.WATCH_CAPABILITY, CapabilityClient.FILTER_REACHABLE)
+            .addOnSuccessListener { capability ->
+                val node = capability.nodes.firstOrNull { it.isNearby } ?: capability.nodes.firstOrNull()
+                if (node != null) send(node.id)
+            }
+            .addOnFailureListener { failure ->
+                update { it.copy(lastError = "查找手表同步节点失败：${failure.message}") }
+            }
+    }
+
+    @Synchronized
+    private fun recordPcConnectionResult(context: Context, connected: Boolean) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (pcMonitoringStartedElapsedMillis == null) {
+            pcMonitoringStartedElapsedMillis = nowElapsed
+        }
+        if (connected) {
+            lastPcConnectedElapsedMillis = nowElapsed
+            autoStopTriggered = false
+            return
+        }
+        val state = mutableState.value
+        if (
+            autoStopTriggered ||
+            !connectionTimedOut(
+                enabled = state.autoStopOnTimeoutEnabled,
+                active = state.forwardingEnabled,
+                monitoringStartedElapsedMillis = pcMonitoringStartedElapsedMillis,
+                lastConnectedElapsedMillis = lastPcConnectedElapsedMillis,
+                nowElapsedMillis = nowElapsed,
+            )
+        ) {
+            return
+        }
+        autoStopTriggered = true
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+            putBoolean("forwardingEnabled", false)
+            putBoolean("autoStopped", true)
+        }
+        synchronized(pendingForwardLock) { pendingForwards.clear() }
+        update {
+            it.copy(
+                forwardingEnabled = false,
+                forwarding = false,
+                autoStopped = true,
+                diagnosticRunning = false,
+                diagnosticStatus = if (it.diagnosticRunning) {
+                    "诊断已取消：连接超时后自动停止"
+                } else {
+                    it.diagnosticStatus
+                },
+                lastError = "连续 5 分钟未连接电脑，已自动停止发送",
+            )
+        }
+        if (isXiaomiMode()) {
+            context.stopService(android.content.Intent(context, XiaomiHeartRateService::class.java))
+        }
+        PhoneRelayNotificationService.reportAutoStopped(context)
+    }
+
+    @Synchronized
+    private fun resetPcTimeoutMonitoring() {
+        pcMonitoringStartedElapsedMillis = null
+        lastPcConnectedElapsedMillis = null
+        autoStopTriggered = false
     }
 
     @Synchronized

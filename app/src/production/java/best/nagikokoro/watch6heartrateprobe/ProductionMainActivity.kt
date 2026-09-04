@@ -1,7 +1,10 @@
 package best.nagikokoro.watch6heartrateprobe
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -38,6 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.TextUnit
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.material3.Text as WearText
@@ -48,6 +52,9 @@ class ProductionMainActivity : ComponentActivity() {
     private lateinit var relaySettings: WatchRelaySettings
     private var pendingStartAfterPermission = false
     private var restoreChecked = false
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocale.wrap(newBase))
@@ -81,6 +88,12 @@ class ProductionMainActivity : ComponentActivity() {
             mapOf("savedInstanceStatePresent" to (savedInstanceState != null)),
         )
         viewModel.onPermissionCheck(permissionManager.currentState(this))
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -292,6 +305,14 @@ private fun ProductionScreen(
                 ProductionStatusRow(
                     "手机",
                     if (relayStatus.phoneNearby) relayStatus.phoneName else "等待连接",
+                )
+                ProductionStatusRow(
+                    "电脑对照",
+                    if (relayStatus.lastPcAck) {
+                        "${relayStatus.lastPcConfirmedBpm ?: "--"} BPM 已确认"
+                    } else {
+                        "等待回执"
+                    },
                 )
                 ProductionStatusRow(
                     "数据",

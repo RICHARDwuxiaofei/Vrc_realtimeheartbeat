@@ -1,9 +1,12 @@
 package best.nagikokoro.watch6heartrateprobe
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
@@ -58,6 +61,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var diagnosticSimulator: DiagnosticHeartRateSimulator
     private var pendingStartAfterPermission = false
     private var restoreChecked = false
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocale.wrap(newBase))
@@ -128,6 +134,12 @@ class MainActivity : ComponentActivity() {
             mapOf("savedInstanceStatePresent" to (savedInstanceState != null)),
         )
         viewModel.onPermissionCheck(permissionManager.currentState(this))
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         keepActivityScreenOn(true)
 
         setContent {
@@ -589,7 +601,14 @@ private fun StatusBlock(
         StatusLine("Health Services", state.healthServicesAvailable.displayText)
         StatusLine("手机蓝牙中转", if (relayStatus.phoneNearby) "已连接 ${relayStatus.phoneName}" else "等待手机")
         StatusLine("已发 / 失败", "${relayStatus.sentCount} / ${relayStatus.failedCount}")
-        StatusLine("电脑回执", if (relayStatus.lastPcAck) "已确认" else "等待")
+        StatusLine(
+            "电脑回执",
+            if (relayStatus.lastPcAck) {
+                "${relayStatus.lastPcConfirmedBpm ?: "--"} BPM 已对照"
+            } else {
+                "等待"
+            },
+        )
         StatusLine("远端诊断模式", booleanText(relayStatus.diagnosticMode))
         StatusLine("样本数", sampleCount.toString())
         StatusLine("最后更新时间", lastUpdate?.let(::formatTimestamp) ?: "--")

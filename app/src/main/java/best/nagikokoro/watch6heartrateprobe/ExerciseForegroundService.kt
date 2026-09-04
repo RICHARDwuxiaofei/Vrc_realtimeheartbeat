@@ -18,6 +18,7 @@ import android.hardware.SensorManager
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.health.services.client.ExerciseClient
 import androidx.health.services.client.ExerciseUpdateCallback
@@ -64,6 +65,7 @@ class ExerciseForegroundService : Service() {
     private lateinit var relaySettings: WatchRelaySettings
     private lateinit var sensorManager: SensorManager
     private var staleTicker: Job? = null
+    private var notificationTicker: Job? = null
     private var staleLatched = false
     private var deliveryWakeLock: PowerManager.WakeLock? = null
     private var wakeLockSessionId: String? = null
@@ -79,6 +81,9 @@ class ExerciseForegroundService : Service() {
     private var lastWatchAckRequestedSampleEpochMillis = 0L
     private var lastBatteryRefreshMillis = 0L
     private var activeRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS
+    private var connectionMonitoringStartedElapsedMillis = SystemClock.elapsedRealtime()
+    private var connectionTimeoutTriggered = false
+    private var lastObservedAutoStopEnabled: Boolean? = null
 
     private val directHeartRateListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -342,6 +347,7 @@ class ExerciseForegroundService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, buildNotification(store.state.value.bpm))
         }
+        startNotificationTicker()
         logger.info(
             "FOREGROUND_SERVICE_COMMAND",
             "Exercise foreground service received a command",
@@ -353,7 +359,11 @@ class ExerciseForegroundService : Service() {
         )
         when (intent?.action) {
             ACTION_STOP -> requestEnd(intent.getStringExtra(EXTRA_REASON) ?: "USER")
-            ACTION_START -> startOrRestore(explicitStart = true)
+            ACTION_START -> {
+                connectionMonitoringStartedElapsedMillis = SystemClock.elapsedRealtime()
+                connectionTimeoutTriggered = false
+                startOrRestore(explicitStart = true)
+            }
             ACTION_UPDATE_RELAY_MODE -> applyUpdatedRelayMode()
             else -> startOrRestore(explicitStart = false)
         }
@@ -364,6 +374,7 @@ class ExerciseForegroundService : Service() {
 
     override fun onDestroy() {
         staleTicker?.cancel()
+        notificationTicker?.cancel()
         stopDirectHeartRateRelay("SERVICE_DESTROY")
         releaseDeliveryWakeLock("SERVICE_DESTROY")
         runCatching { unregisterReceiver(screenReceiver) }
@@ -1171,9 +1182,77 @@ class ExerciseForegroundService : Service() {
                 setShowBadge(false)
             },
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                AUTO_STOP_NOTIFICATION_CHANNEL,
+                AppLocale.text(this, "连接超时提醒"),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = AppLocale.text(
+                    this@ExerciseForegroundService,
+                    "连接超时并自动停止后只提醒一次",
+                )
+                setShowBadge(false)
+            },
+        )
+    }
+
+    private fun startNotificationTicker() {
+        if (notificationTicker?.isActive == true) return
+        notificationTicker = serviceScope.launch {
+            while (isActive) {
+                delay(NOTIFICATION_UPDATE_INTERVAL_MILLIS)
+                val snapshot = store.state.value
+                getSystemService(NotificationManager::class.java)
+                    .notify(NOTIFICATION_ID, buildNotification(snapshot.bpm))
+                checkConnectionTimeout(snapshot)
+            }
+        }
+    }
+
+    private fun checkConnectionTimeout(snapshot: ExerciseSessionSnapshot) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val enabled = relaySettings.autoStopOnTimeoutEnabled.value
+        if (lastObservedAutoStopEnabled != enabled) {
+            lastObservedAutoStopEnabled = enabled
+            connectionMonitoringStartedElapsedMillis = nowElapsed
+            connectionTimeoutTriggered = false
+        }
+        if (connectionTimeoutTriggered || !enabled) return
+        val relayStatus = RelayStatusStore.state.value
+        if (
+            !connectionTimedOut(
+                enabled = true,
+                active = snapshot.serviceRunning && snapshot.sessionState == ExerciseSessionState.ACTIVE,
+                monitoringStartedElapsedMillis = connectionMonitoringStartedElapsedMillis,
+                lastConnectedElapsedMillis = relayStatus.lastSuccessfulPcAckElapsedMillis
+                    ?.takeIf { it >= connectionMonitoringStartedElapsedMillis },
+                nowElapsedMillis = nowElapsed,
+            )
+        ) {
+            return
+        }
+        connectionTimeoutTriggered = true
+        showAutoStoppedNotification()
+        logger.warn(
+            "CONNECTION_TIMEOUT_AUTO_STOP",
+            "No successful PC acknowledgement was received for five minutes; stopping heart-rate relay",
+            serviceFields("CONNECTION_TIMEOUT_AUTO_STOP"),
+        )
+        requestEnd("CONNECTION_TIMEOUT_AUTO_STOP")
     }
 
     private fun buildNotification(bpm: Int?): Notification {
+        val snapshot = store.state.value
+        val now = System.currentTimeMillis()
+        val freshBpm = watchNotificationBpm(snapshot.copy(bpm = bpm), now)
+        val status = AppLocale.text(
+            this,
+            watchNotificationStatusKey(snapshot.sessionState),
+        )
+        val heartRate = freshBpm?.let { "$it BPM" }
+            ?: AppLocale.text(this, "正在等待心率")
+        val relayMode = AppLocale.text(this, snapshot.relayMode.displayName)
         val openIntent = requireNotNull(packageManager.getLaunchIntentForPackage(packageName)) {
             "No launcher activity is declared for $packageName"
         }.apply {
@@ -1188,18 +1267,39 @@ class ExerciseForegroundService : Service() {
         return Notification.Builder(this, NOTIFICATION_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(AppLocale.text(this, "后台心率传输运行中"))
-            .setContentText(
-                AppLocale.text(
-                    this,
-                    bpm?.let { "$it BPM · ${store.state.value.relayMode.displayName}" }
-                        ?: "正在等待心率 · ${store.state.value.relayMode.displayName}",
-                ),
-            )
+            .setContentText("$heartRate · $status · $relayMode")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setShowWhen(true)
+            .setWhen(now)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
+    }
+
+    private fun showAutoStoppedNotification() {
+        val openIntent = requireNotNull(packageManager.getLaunchIntentForPackage(packageName)).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            1,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(this, AUTO_STOP_NOTIFICATION_CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(AppLocale.text(this, "心率传输已自动停止"))
+            .setContentText(AppLocale.text(this, "连续 5 分钟未连通电脑；点按可重新打开应用"))
+            .setContentIntent(pendingIntent)
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(true)
+            .setCategory(Notification.CATEGORY_STATUS)
+            .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(AUTO_STOP_NOTIFICATION_ID, notification)
     }
 
     companion object {
@@ -1209,7 +1309,9 @@ class ExerciseForegroundService : Service() {
             "best.nagikokoro.watch6heartrateprobe.action.UPDATE_RELAY_MODE"
         private const val EXTRA_REASON = "reason"
         private const val NOTIFICATION_CHANNEL = "exercise_hr_probe"
+        private const val AUTO_STOP_NOTIFICATION_CHANNEL = "exercise_hr_probe_auto_stop"
         private const val NOTIFICATION_ID = 6001
+        private const val AUTO_STOP_NOTIFICATION_ID = 6002
         private const val MIN_VALID_BPM = 20.0
         private const val MAX_VALID_BPM = 300.0
         private const val STALE_AFTER_MILLIS = 10_000L
@@ -1221,6 +1323,7 @@ class ExerciseForegroundService : Service() {
         private const val WATCH_ACK_INTERVAL_MILLIS = 60_000L
         private const val PRODUCTION_TICK_MILLIS = 5_000L
         private const val DIAGNOSTIC_TICK_MILLIS = 1_000L
+        private const val NOTIFICATION_UPDATE_INTERVAL_MILLIS = 5_000L
         private val DIRECT_EXECUTOR = Executor { it.run() }
 
         fun requestStart(context: Context) {

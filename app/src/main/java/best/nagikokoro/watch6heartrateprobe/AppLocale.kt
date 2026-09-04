@@ -90,6 +90,19 @@ internal object WatchTranslations {
         "5 秒省电" to Translation("5 s balanced", "5秒 省電"),
         "10 秒超省电" to Translation("10 s power saver", "10秒 超省電"),
         "息屏心率节能传输" to Translation("Screen-off heart rate relay", "画面オフ心拍数省電転送"),
+        "连接超时提醒" to Translation("Connection timeout", "接続タイムアウト"),
+        "连接超时并自动停止后只提醒一次" to Translation(
+            "Notifies once after an automatic timeout stop",
+            "接続タイムアウトによる自動停止後に1回だけ通知します",
+        ),
+        "心率传输已自动停止" to Translation(
+            "Heart rate relay stopped automatically",
+            "心拍数転送を自動停止しました",
+        ),
+        "连续 5 分钟未连通电脑；点按可重新打开应用" to Translation(
+            "No end-to-end PC connection for 5 minutes. Tap to reopen the app.",
+            "PCまでの接続が5分間ありませんでした。タップしてアプリを開きます。",
+        ),
         "按所选的 1 秒实时或 5 秒省电模式传输心率" to Translation(
             "Relays heart rate using the selected 1 s, 5 s, or 10 s mode",
             "選択した1秒・5秒・10秒モードで心拍数を転送します",
@@ -208,6 +221,7 @@ internal object WatchTranslations {
         "正在启动" to Translation("Starting", "開始中"),
         "运行中" to Translation("Running", "実行中"),
         "已暂停" to Translation("Paused", "一時停止"),
+        "正在停止" to Translation("Stopping", "停止中"),
         "正在结束" to Translation("Ending", "終了中"),
         "已结束" to Translation("Ended", "終了"),
         "错误" to Translation("Error", "エラー"),

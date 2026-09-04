@@ -9,7 +9,7 @@
 - 当前续接工作区：`D:\CODE\Vrc_realtimeheartbeat`
 - 当前分支：`codex/watch-sync-and-compat-handoff`
 - 交接快照提交：`2f304a828f324c54d88ea247df586dd5dbb8729c`
-- 旧工作区 `C:\Users\wrq18\.codex\worktrees\c306\Vrc_realtimeheartbeat` 仍停在
+- 旧 Codex worktree 仍停在
   `codex/watch-sync-and-compat` / `0cddb47`，其中原有未提交改动保持不动。
 - 不要切回旧分支，也不要在两个工作区之间机械覆盖文件。
 - 当前尚未推送分支、创建 PR 或 Release。
@@ -332,7 +332,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```text
 型号：SM-R960 Galaxy Watch6 Classic
-最近使用的无线 ADB：10.163.22.1:35047
+最近使用的是手表无线 ADB 临时地址，端口会随无线调试重启而变化。
 系统：Android 16 / API 36
 Build：R960XXU2CZB6
 ```
@@ -351,7 +351,7 @@ best.nagikokoro.watch6heartrateprobe.diagnostic
 ```text
 adb devices -l：空
 adb mdns services：空
-adb connect 10.163.22.1:35047：连接超时 10060
+连接原无线 ADB 临时地址：超时 10060
 ```
 
 无线调试端口可能已经变化或连接需要重新授权。重新安装表圈版本前必须先恢复 ADB。
@@ -368,20 +368,20 @@ adb connect 10.163.22.1:35047：连接超时 10060
 桌面快捷方式：
 
 ```text
-C:\Users\wrq18\Desktop\VRChat 心率桥.lnk
+%USERPROFILE%\Desktop\VRChat 心率桥.lnk
 ```
 
 目标：
 
 ```text
-C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.exe
+%LOCALAPPDATA%\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.exe
 ```
 
 稳定目录已覆盖为 UI 重构后的 `1.2.0` 构建，安装路径 `--self-test` 退出码为 0。
 桌面快捷方式目标已复核无误。旧 EXE 保存在同目录：
 
 ```text
-C:\Users\wrq18\AppData\Local\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.pre-ui-20260728.exe
+%LOCALAPPDATA%\Programs\VrcRealtimeHeartbeat\VrcRealtimeHeartbeat-Python.pre-ui-20260728.exe
 ```
 
 ## 8. 当前构建产物

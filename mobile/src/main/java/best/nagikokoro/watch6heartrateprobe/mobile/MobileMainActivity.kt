@@ -56,11 +56,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.TextUnit
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import best.nagikokoro.watch6heartrateprobe.BuildConfig
 import best.nagikokoro.watch6heartrateprobe.R
@@ -88,6 +90,17 @@ class MobileMainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PhoneRelayRepository.initialize(this)
+        PhoneRelayNotificationService.requestStart(this)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                NOTIFICATION_PERMISSION_REQUEST_CODE,
+            )
+        }
         setContent {
             RelayApp(
                 onLanguageChange = { AppLocale.apply(this@MobileMainActivity, it) },
@@ -98,9 +111,17 @@ class MobileMainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         PhoneRelayRepository.refreshNetwork()
-        if (PhoneRelayRepository.isXiaomiMode() && hasXiaomiBlePermissions(this)) {
+        if (
+            PhoneRelayRepository.isXiaomiMode() &&
+            !PhoneRelayRepository.state.value.autoStopped &&
+            hasXiaomiBlePermissions(this)
+        ) {
             startXiaomiService(this, XiaomiHeartRateService.ACTION_START)
         }
+    }
+
+    companion object {
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 7301
     }
 }
 
@@ -195,36 +216,22 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             HeartRateHero(state, now, watchAlive)
-            LanguageCard(
-                selected = AppLocale.selected(context),
-                onSelect = onLanguageChange,
+            TransferControlCard(
+                enabled = state.forwardingEnabled,
+                intervalSeconds = state.forwardIntervalSeconds,
+                watchIntervalSeconds = state.watchRelayIntervalSeconds,
+                source = state.heartRateSource,
             )
-            HeartRateSourceCard(
-                state = state,
-                onSwitchToXiaomi = {
-                    if (hasXiaomiBlePermissions(context)) {
-                        PhoneRelayRepository.setHeartRateSource(HeartRateSource.XIAOMI_BAND_BLE)
-                        startXiaomiService(context, XiaomiHeartRateService.ACTION_START)
-                    } else {
-                        xiaomiPermissionLauncher.launch(xiaomiRuntimePermissions())
-                    }
-                },
-                onSwitchToGalaxy = {
-                    context.stopService(Intent(context, XiaomiHeartRateService::class.java))
-                    PhoneRelayRepository.setHeartRateSource(HeartRateSource.GALAXY_WATCH)
-                },
-                onScan = {
-                    startXiaomiService(context, XiaomiHeartRateService.ACTION_SCAN)
-                },
-                onConnect = { candidate ->
-                    startXiaomiService(
-                        context,
-                        XiaomiHeartRateService.ACTION_CONNECT,
-                        candidate,
-                    )
-                },
-            )
-            DiagnosticModeCard(state.diagnosticMode, state.heartRateSource)
+            if (watchIntervalSeconds != null &&
+                state.heartRateSource == HeartRateSource.GALAXY_WATCH &&
+                state.forwardIntervalSeconds < watchIntervalSeconds
+            ) {
+                AlertCard(
+                    "手机已选 ${state.forwardIntervalSeconds} 秒，但手表当前约 $watchIntervalSeconds 秒才产生一份新数据。请在手表停止传输后切到“1 秒实时”。",
+                    AccentBlue.copy(alpha = 0.10f),
+                    AccentBlue,
+                )
+            }
 
             SectionTitle("链路状态")
             StatusCard(
@@ -263,28 +270,11 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                 "Windows 接收器",
                 when {
                     !state.forwardingEnabled -> "已暂停发送到电脑"
-                    pcAlive -> "电脑已确认 · 每 ${state.forwardIntervalSeconds} 秒发送"
+                    pcAlive -> "电脑已对照 ${state.lastPcConfirmedBpm ?: "--"} BPM · 每 ${state.forwardIntervalSeconds} 秒发送"
                     else -> "等待电脑回执 · 每 ${state.forwardIntervalSeconds} 秒发送"
                 },
                 pcAlive && state.forwardingEnabled,
             )
-
-            TransferControlCard(
-                enabled = state.forwardingEnabled,
-                intervalSeconds = state.forwardIntervalSeconds,
-                watchIntervalSeconds = state.watchRelayIntervalSeconds,
-                source = state.heartRateSource,
-            )
-            if (watchIntervalSeconds != null &&
-                state.heartRateSource == HeartRateSource.GALAXY_WATCH &&
-                state.forwardIntervalSeconds < watchIntervalSeconds
-            ) {
-                AlertCard(
-                    "手机已选 ${state.forwardIntervalSeconds} 秒，但手表当前约 $watchIntervalSeconds 秒才产生一份新数据。请在手表停止传输后切到“1 秒实时”。",
-                    AccentBlue.copy(alpha = 0.10f),
-                    AccentBlue,
-                )
-            }
 
             SectionTitle("电脑地址")
             Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
@@ -306,7 +296,7 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                         value = ip,
                         onValueChange = { ip = it.trim() },
                         label = { Text("电脑 IPv4") },
-                        placeholder = { Text("例如 192.168.100.188") },
+                        placeholder = { Text("例如 192.168.1.100") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
@@ -352,6 +342,33 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                 }
             }
 
+            HeartRateSourceCard(
+                state = state,
+                onSwitchToXiaomi = {
+                    if (hasXiaomiBlePermissions(context)) {
+                        PhoneRelayRepository.setHeartRateSource(HeartRateSource.XIAOMI_BAND_BLE)
+                        startXiaomiService(context, XiaomiHeartRateService.ACTION_START)
+                    } else {
+                        xiaomiPermissionLauncher.launch(xiaomiRuntimePermissions())
+                    }
+                },
+                onSwitchToGalaxy = {
+                    context.stopService(Intent(context, XiaomiHeartRateService::class.java))
+                    PhoneRelayRepository.setHeartRateSource(HeartRateSource.GALAXY_WATCH)
+                },
+                onScan = {
+                    startXiaomiService(context, XiaomiHeartRateService.ACTION_SCAN)
+                },
+                onConnect = { candidate ->
+                    startXiaomiService(
+                        context,
+                        XiaomiHeartRateService.ACTION_CONNECT,
+                        candidate,
+                    )
+                },
+            )
+            DiagnosticModeCard(state.diagnosticMode, state.heartRateSource)
+
             if (state.diagnosticMode) {
                 Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardBackground)) {
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -360,6 +377,7 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                         Metric("未转发样本", state.throttledCount.toString())
                         Metric("已发往电脑", state.forwardedCount.toString())
                         Metric("电脑确认", state.pcAckCount.toString())
+                        Metric("电脑对照 BPM", state.lastPcConfirmedBpm?.toString() ?: "--")
                         Metric("原始 BPM", state.watchRawBpm?.toString() ?: "--")
                         Metric("传感器精度", state.watchAccuracy ?: "--")
                         Metric("手表电量", state.watchBatteryPercent?.let { "$it%" } ?: "--")
@@ -398,6 +416,12 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
             )
+            SectionTitle("不常用设置")
+            AutoStopSettingsCard(state.autoStopOnTimeoutEnabled)
+            LanguageCard(
+                selected = AppLocale.selected(context),
+                onSelect = onLanguageChange,
+            )
             Spacer(Modifier.height(12.dp))
             Box(
                 modifier = Modifier.fillMaxWidth(),
@@ -411,6 +435,34 @@ private fun RelayScreen(onLanguageChange: (AppLanguage) -> Unit) {
                 )
             }
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun AutoStopSettingsCard(enabled: Boolean) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CardElevated),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                Text("5 分钟未连接自动停止", fontWeight = FontWeight.Bold)
+                Text(
+                    "连续 5 分钟收不到电脑回执时停止手机发送，并同步让手表停止采集；超时通知只出现一次，可手动清除。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = PhoneRelayRepository::setAutoStopOnTimeoutEnabled,
+            )
         }
     }
 }
@@ -621,8 +673,16 @@ private fun TransferControlCard(
                 }
                 Text(if (enabled) "运行中" else "已暂停", color = if (enabled) Success else AccentCoral, fontWeight = FontWeight.Bold)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("${sourceLabel(source)} → 手机", color = Muted, fontSize = 12.sp)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "${sourceLabel(source)} → 手机",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                )
                 Text(
                     if (source == HeartRateSource.XIAOMI_BAND_BLE) {
                         "由 BLE 广播决定"
@@ -630,6 +690,8 @@ private fun TransferControlCard(
                         watchIntervalSeconds?.let { "约 ${it} 秒" } ?: "等待手表上报"
                     },
                     fontSize = 12.sp,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f),
                 )
             }
             Text("手表与手机同步发送间隔", color = Muted, fontSize = 12.sp)
@@ -706,6 +768,7 @@ private fun Text(
     fontWeight: FontWeight? = null,
     letterSpacing: TextUnit = TextUnit.Unspecified,
     lineHeight: TextUnit = TextUnit.Unspecified,
+    textAlign: TextAlign = TextAlign.Unspecified,
 ) {
     MaterialText(
         text = AppLocale.text(LocalContext.current, text),
@@ -715,6 +778,7 @@ private fun Text(
         fontWeight = fontWeight,
         letterSpacing = letterSpacing,
         lineHeight = lineHeight,
+        textAlign = textAlign,
     )
 }
 

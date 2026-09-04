@@ -14,6 +14,7 @@ class AppSettings:
     listen_port: int = 9123
     osc_port: int = 9000
     forward_osc: bool = True
+    forward_oyasumi: bool = False
     input_source: str = PHONE_RELAY
     ble_address: str = ""
     ble_name: str = ""
@@ -36,6 +37,7 @@ def load_settings(path: Path | None = None) -> AppSettings:
             listen_port=_port(payload.get("listen_port"), 9123),
             osc_port=_port(payload.get("osc_port"), 9000),
             forward_osc=bool(payload.get("forward_osc", True)),
+            forward_oyasumi=bool(payload.get("forward_oyasumi", False)),
             input_source=normalize_input_source(payload.get("input_source")),
             ble_address=_safe_text(payload.get("ble_address")),
             ble_name=_safe_text(payload.get("ble_name")),
