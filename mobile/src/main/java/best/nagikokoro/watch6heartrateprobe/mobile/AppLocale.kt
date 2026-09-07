@@ -69,6 +69,9 @@ internal object PhoneTranslations {
         "跟随系统" to Translation("Follow system", "システムに従う"),
         "简体中文" to Translation("简体中文", "簡体字中国語"),
         "心率中转站" to Translation("Heart Rate Relay", "心拍数リレー"),
+        "手机心率通知" to Translation("Phone heart rate", "スマートフォン心拍数"),
+        "当前心率" to Translation("Current heart rate", "現在の心拍数"),
+        "每五秒更新一次当前心率" to Translation("Updates the current heart rate every five seconds", "現在の心拍数を5秒ごとに更新"),
         "心率来源" to Translation("Heart rate source", "心拍数ソース"),
         "链路状态" to Translation("Connection status", "接続状態"),
         "小米手环" to Translation("Xiaomi Smart Band", "Xiaomi Smart Band"),
@@ -161,9 +164,9 @@ internal object PhoneTranslations {
         "由 BLE 广播决定" to Translation("Controlled by BLE broadcast", "BLEブロードキャストに依存"),
         "等待手表上报" to Translation("Waiting for watch report", "Watchからの報告を待機中"),
         "手表与手机同步发送间隔" to Translation("Watch and phone relay interval", "Watchとスマートフォンの送信間隔"),
-        "在手机或手表任意一端选择，另一端会自动同步；运行中也可切换。" to Translation(
-            "Choose on either the phone or watch; the other side syncs automatically, even while running.",
-            "スマートフォンまたはWatchのどちらかで選ぶと、もう一方へ自動同期されます。動作中も変更できます。",
+        "电脑、手机或手表任意一端选择，另外两端会自动同步；运行中也可切换。" to Translation(
+            "Choose on the PC, phone, or watch; the other two sync automatically, even while running.",
+            "PC、スマートフォン、Watchのいずれかで選ぶと、残り2つへ自動同期されます。動作中も変更できます。",
         ),
         "暂停发送到电脑" to Translation("Pause PC relay", "PCへの転送を一時停止"),
         "恢复发送到电脑" to Translation("Resume PC relay", "PCへの転送を再開"),

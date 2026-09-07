@@ -10,6 +10,7 @@ from .engine import BridgeEngine
 from .input_sources import PHONE_RELAY, XIAOMI_PC_BLE
 from .osc import encode_message
 from .protocol import HeartRatePacket, ProtocolError, build_ack, packet_latency_ms, parse_packet
+from .settings import DEFAULT_RELAY_INTERVAL_SECONDS, normalize_relay_interval
 
 
 EventCallback = Callable[[str, dict[str, Any]], None]
@@ -23,6 +24,8 @@ class RuntimeConfig:
     osc_port: int = 9000
     forward_osc: bool = True
     input_source: str = PHONE_RELAY
+    relay_interval_seconds: int = DEFAULT_RELAY_INTERVAL_SECONDS
+    relay_interval_updated_epoch_millis: int = 0
 
 
 class BridgeRuntime:
@@ -35,6 +38,8 @@ class BridgeRuntime:
         self._thread: threading.Thread | None = None
         self._forward_osc = config.forward_osc
         self._diagnostic_mode = False
+        self._relay_interval_seconds = normalize_relay_interval(config.relay_interval_seconds)
+        self._relay_interval_updated_epoch_millis = max(0, config.relay_interval_updated_epoch_millis)
         self._engine = BridgeEngine(self._send_osc)
         self._engine_lock = threading.RLock()
         self.bound_port = 0
@@ -81,6 +86,10 @@ class BridgeRuntime:
 
     def set_diagnostic_mode(self, enabled: bool) -> None:
         self._diagnostic_mode = bool(enabled)
+
+    def set_relay_interval(self, seconds: int, updated_epoch_millis: int) -> None:
+        self._relay_interval_seconds = normalize_relay_interval(seconds)
+        self._relay_interval_updated_epoch_millis = max(0, int(updated_epoch_millis))
 
     def stop(self) -> None:
         self._stop.set()
@@ -186,7 +195,16 @@ class BridgeRuntime:
             now_ms = _now_ms()
             try:
                 packet = parse_packet(data)
-                receiver.sendto(build_ack(packet.sequence, now_ms, self._diagnostic_mode), sender)
+                receiver.sendto(
+                    build_ack(
+                        packet.sequence,
+                        now_ms,
+                        self._diagnostic_mode,
+                        self._relay_interval_seconds,
+                        self._relay_interval_updated_epoch_millis,
+                    ),
+                    sender,
+                )
                 with self._engine_lock:
                     result = self._engine.accept(packet, now_ms)
                 self._emit(

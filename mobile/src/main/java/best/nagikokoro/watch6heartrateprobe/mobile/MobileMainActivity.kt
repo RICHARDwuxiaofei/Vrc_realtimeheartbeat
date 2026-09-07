@@ -81,6 +81,9 @@ private val Muted = Color(0xFFCAC4D0)
 private val Outline = Color(0xFF49454F)
 
 class MobileMainActivity : ComponentActivity() {
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocale.wrap(newBase))
     }
@@ -92,6 +95,16 @@ class MobileMainActivity : ComponentActivity() {
             RelayApp(
                 onLanguageChange = { AppLocale.apply(this@MobileMainActivity, it) },
             )
+        }
+        requestNotificationPermissionIfNeeded()
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -644,7 +657,7 @@ private fun TransferControlCard(
                 }
             }
             Text(
-                "在手机或手表任意一端选择，另一端会自动同步；运行中也可切换。",
+                "电脑、手机或手表任意一端选择，另外两端会自动同步；运行中也可切换。",
                 color = Muted,
                 fontSize = 11.sp,
             )

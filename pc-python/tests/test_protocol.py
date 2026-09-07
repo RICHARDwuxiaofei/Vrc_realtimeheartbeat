@@ -79,6 +79,17 @@ def test_ack_can_request_diagnostic_mode():
     assert json.loads(build_ack(42, 9_000, diagnostic_mode=True))["diagnosticMode"] is True
 
 
+def test_ack_can_publish_relay_interval_to_phone():
+    assert json.loads(build_ack(42, 9_000, relay_interval_seconds=10, relay_interval_updated_epoch_millis=8_000)) == {
+        "type": "pc_ack",
+        "sequence": 42,
+        "pcEpochMillis": 9_000,
+        "diagnosticMode": False,
+        "relayIntervalSeconds": 10,
+        "relayIntervalUpdatedEpochMillis": 8_000,
+    }
+
+
 def test_latency_never_goes_negative():
     parsed = parse_packet(packet(sampleEpochMillis=2_000))
     assert packet_latency_ms(parsed, 1_500) == 0

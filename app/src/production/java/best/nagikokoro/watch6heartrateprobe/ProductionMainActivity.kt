@@ -206,7 +206,13 @@ private fun ProductionScreen(
     }
     val signalFresh = running && bpm != null && ageSeconds != null && ageSeconds < 10L
     val displayedRelayMode = if (running) exercise.relayMode else selectedRelayMode
+    val automaticStopMessage = when (exercise.endReason) {
+        WatchSessionWatchdog.CHARGING_STOP_REASON -> "检测到充电，已停止"
+        WatchSessionWatchdog.NO_HEART_RATE_STOP_REASON -> "超过五分钟没有心率，已停止"
+        else -> null
+    }
     val statusText = when {
+        !running && automaticStopMessage != null -> automaticStopMessage
         !running -> "尚未启动"
         bpm == null -> "正在等待心率"
         !signalFresh -> "心率信号暂时中断"

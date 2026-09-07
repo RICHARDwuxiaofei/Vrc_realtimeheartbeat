@@ -74,17 +74,41 @@ def parse_packet(data: bytes | str) -> HeartRatePacket:
     )
 
 
-def build_ack(sequence: int, now_ms: int, diagnostic_mode: bool = False) -> bytes:
+def build_ack(
+    sequence: int,
+    now_ms: int,
+    diagnostic_mode: bool = False,
+    relay_interval_seconds: int | None = None,
+    relay_interval_updated_epoch_millis: int = 0,
+) -> bytes:
+    payload: dict[str, Any] = {
+        "type": "pc_ack",
+        "sequence": sequence,
+        "pcEpochMillis": now_ms,
+        "diagnosticMode": diagnostic_mode,
+    }
+    # Keep the old ACK shape available to callers that do not participate in
+    # interval synchronisation; the live runtime always supplies this field.
+    if relay_interval_seconds is not None:
+        payload.update(
+            {
+                "relayIntervalSeconds": _normalize_relay_interval(relay_interval_seconds),
+                "relayIntervalUpdatedEpochMillis": max(0, int(relay_interval_updated_epoch_millis)),
+            }
+        )
     return json.dumps(
-        {
-            "type": "pc_ack",
-            "sequence": sequence,
-            "pcEpochMillis": now_ms,
-            "diagnosticMode": diagnostic_mode,
-        },
+        payload,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _normalize_relay_interval(seconds: int) -> int:
+    if seconds <= 1:
+        return 1
+    if seconds <= 5:
+        return 5
+    return 10
 
 
 def packet_latency_ms(packet: HeartRatePacket, now_ms: int) -> int:

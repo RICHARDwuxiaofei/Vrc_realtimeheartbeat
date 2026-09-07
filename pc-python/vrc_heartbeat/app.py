@@ -4,7 +4,6 @@ import ctypes
 from datetime import datetime
 import os
 import queue
-import socket
 import sys
 import threading
 import time
@@ -21,9 +20,17 @@ from .ble_direct import BleHeartRateClient
 from .diagnostic_csv import DiagnosticCsvStore
 from .input_sources import INPUT_SOURCE_LABELS, PHONE_RELAY, XIAOMI_PC_BLE
 from .i18n import LANGUAGES, Translator
+from .network import local_ipv4_addresses as discover_local_ipv4_addresses
 from .pairing import build_pairing_uri
 from .runtime import BridgeRuntime, RuntimeConfig
-from .settings import AppSettings, load_settings, save_settings
+from .settings import (
+    DEFAULT_RELAY_INTERVAL_SECONDS,
+    RELAY_INTERVAL_OPTIONS,
+    AppSettings,
+    load_settings,
+    normalize_relay_interval,
+    save_settings,
+)
 from .updates import fetch_latest_release, is_newer_version
 
 
@@ -43,6 +50,11 @@ WARN = "#ffc56d"
 CHART_GRID = "#302d35"
 CARD_RADIUS = 22
 CONTROL_RADIUS = 14
+RELAY_INTERVAL_LABELS = {
+    1: "1 秒（实时）",
+    5: "5 秒（省电）",
+    10: "10 秒（超省电）",
+}
 
 
 class LocalizedStringVar(tk.StringVar):
@@ -476,6 +488,13 @@ class HeartRateBridgeApp:
             key: self.tr(label)
             for key, label in INPUT_SOURCE_LABELS.items()
         }
+        self.relay_interval_labels = {
+            seconds: self.tr(RELAY_INTERVAL_LABELS[seconds])
+            for seconds in RELAY_INTERVAL_OPTIONS
+        }
+        self.relay_interval_seconds_by_label = {
+            label: seconds for seconds, label in self.relay_interval_labels.items()
+        }
         self.language_options = self.translator.language_options()
         self.language_codes_by_label = {
             label: code
@@ -492,11 +511,19 @@ class HeartRateBridgeApp:
         self.app_log = AppFileLogger()
         self.diagnostic_session_started = False
         self.latest_release_url = ""
+        self.update_popup: tk.Toplevel | None = None
+        self.update_popup_tag = ""
         self._qr_photo: Any = None
 
         self.listen_port = tk.StringVar(value=str(self.settings.listen_port))
         self.osc_port = tk.StringVar(value=str(self.settings.osc_port))
         self.forward_osc = tk.BooleanVar(value=self.settings.forward_osc)
+        self.relay_interval_choice = tk.StringVar(
+            value=self.relay_interval_labels.get(
+                self.settings.relay_interval_seconds,
+                self.relay_interval_labels[DEFAULT_RELAY_INTERVAL_SECONDS],
+            )
+        )
         self.input_source_label = tk.StringVar(value=self.input_source_labels[self.settings.input_source])
         self.language_choice = tk.StringVar(value=self.language_options[self.settings.language])
         saved_ble_label = (
@@ -889,10 +916,37 @@ class HeartRateBridgeApp:
         PillToggle(
             settings_panel, text="发送到 VRChat OSC", variable=self.forward_osc, command=self._update_osc_label,
         ).grid(row=1, column=4, columnspan=2, sticky="w", padx=(12, 20), pady=(0, 12))
+        interval_block = tk.Frame(settings_panel, bg=PANEL)
+        interval_block.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(20, 8), pady=(0, 10))
+        tk.Label(
+            interval_block,
+            text="手机/手表发送频率",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.relay_interval_combo = RoundedCombobox(
+            interval_block,
+            textvariable=self.relay_interval_choice,
+            values=list(self.relay_interval_labels.values()),
+            state="readonly",
+            width=240,
+        )
+        self.relay_interval_combo.pack(fill="x", pady=(3, 0))
+        self.relay_interval_combo.bind("<<ComboboxSelected>>", self._change_relay_interval)
+        tk.Label(
+            settings_panel,
+            text="电脑修改后通过 ACK 同步到手机，再由手机同步到手表",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+            justify="left",
+            wraplength=430,
+        ).grid(row=2, column=2, columnspan=4, sticky="w", padx=(8, 20), pady=(0, 10))
         PillToggle(
             settings_panel, text="记录曲线与统计（诊断模式）",
             variable=self.diagnostic_mode, command=self._toggle_diagnostic_mode, width=520,
-        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=20, pady=(2, 14))
+        ).grid(row=3, column=0, columnspan=6, sticky="w", padx=20, pady=(2, 14))
 
         self.start_button = RoundedButton(
             settings_panel,
@@ -901,7 +955,7 @@ class HeartRateBridgeApp:
             command=self.start_receiver,
             width=180,
         )
-        self.start_button.grid(row=3, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 14))
+        self.start_button.grid(row=4, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 14))
         self.stop_button = RoundedButton(
             settings_panel,
             text="停止",
@@ -910,7 +964,7 @@ class HeartRateBridgeApp:
             state="disabled",
             width=180,
         )
-        self.stop_button.grid(row=3, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 14))
+        self.stop_button.grid(row=4, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 14))
         self.qr_button = RoundedButton(
             settings_panel,
             text="显示配对二维码",
@@ -918,14 +972,14 @@ class HeartRateBridgeApp:
             command=self.show_pairing_qr,
             width=220,
         )
-        self.qr_button.grid(row=3, column=4, columnspan=2, sticky="ew", padx=(6, 20), pady=(0, 14))
+        self.qr_button.grid(row=4, column=4, columnspan=2, sticky="ew", padx=(6, 20), pady=(0, 14))
         tk.Label(
             settings_panel,
             text="高级工具",
             bg=PANEL,
             fg=MUTED,
             font=("Microsoft YaHei UI", 8, "bold"),
-        ).grid(row=4, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 7))
+        ).grid(row=5, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 7))
         self.avatar_test_button = RoundedButton(
             settings_panel,
             text="Avatar 参数测试",
@@ -934,7 +988,7 @@ class HeartRateBridgeApp:
             state="disabled",
             width=220,
         )
-        self.avatar_test_button.grid(row=5, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 18))
+        self.avatar_test_button.grid(row=6, column=0, columnspan=2, sticky="ew", padx=(20, 6), pady=(0, 18))
         self.diagnostic_button = RoundedButton(
             settings_panel,
             text="一键诊断",
@@ -943,7 +997,7 @@ class HeartRateBridgeApp:
             state="disabled",
             width=180,
         )
-        self.diagnostic_button.grid(row=5, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 18))
+        self.diagnostic_button.grid(row=6, column=2, columnspan=2, sticky="ew", padx=6, pady=(0, 18))
         self.export_button = RoundedButton(
             settings_panel,
             text="导出 CSV…",
@@ -952,7 +1006,7 @@ class HeartRateBridgeApp:
             state="disabled",
             width=180,
         )
-        self.export_button.grid(row=5, column=4, columnspan=2, sticky="ew", padx=(6, 20), pady=(0, 18))
+        self.export_button.grid(row=6, column=4, columnspan=2, sticky="ew", padx=(6, 20), pady=(0, 18))
         for column in range(6):
             settings_panel.grid_columnconfigure(column, weight=1)
 
@@ -1179,6 +1233,7 @@ class HeartRateBridgeApp:
         self.ble_disconnect_button.configure(
             state="normal" if direct_running and self.ble_connected else "disabled"
         )
+        self.relay_interval_combo.configure(state="disabled" if direct else "readonly")
         self.qr_button.configure(state="disabled" if direct else "normal")
         if not direct:
             self.ble_status_text.set("直连模式未启用；继续使用手机 UDP 中转")
@@ -1219,6 +1274,9 @@ class HeartRateBridgeApp:
                 listen_port=listen_port,
                 osc_port=osc_port,
                 forward_osc=self.forward_osc.get(),
+                relay_interval_seconds=self.settings.relay_interval_seconds,
+                relay_interval_updated_epoch_millis=self.settings.relay_interval_updated_epoch_millis,
+                ignored_update_tag=self.settings.ignored_update_tag,
                 input_source=input_source,
                 ble_address=self.settings.ble_address,
                 ble_name=self.settings.ble_name,
@@ -1232,6 +1290,8 @@ class HeartRateBridgeApp:
                     osc_port=osc_port,
                     forward_osc=self.forward_osc.get(),
                     input_source=input_source,
+                    relay_interval_seconds=settings.relay_interval_seconds,
+                    relay_interval_updated_epoch_millis=settings.relay_interval_updated_epoch_millis,
                 ),
                 self._enqueue_event,
             )
@@ -1435,6 +1495,127 @@ class HeartRateBridgeApp:
         else:
             self.check_for_updates()
 
+    def _destroy_update_popup(self) -> None:
+        popup, self.update_popup = self.update_popup, None
+        self.update_popup_tag = ""
+        if popup is not None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+
+    def _dismiss_update_popup(self, popup: tk.Toplevel) -> None:
+        if self.update_popup is popup:
+            self.update_popup = None
+            self.update_popup_tag = ""
+        try:
+            popup.destroy()
+        except tk.TclError:
+            pass
+
+    def _open_update_release(self, popup: tk.Toplevel, url: str) -> None:
+        self._dismiss_update_popup(popup)
+        if not url:
+            return
+        try:
+            webbrowser.open(url)
+        except OSError as exc:
+            self._append_log(f"打开 GitHub Release 失败：{exc}")
+
+    def _ignore_update_version(self, popup: tk.Toplevel, tag: str) -> None:
+        previous = self.settings.ignored_update_tag
+        self.settings.ignored_update_tag = tag
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self.settings.ignored_update_tag = previous
+            self._append_log(f"保存设置失败：{exc}")
+            self._show_error("忽略更新", f"保存设置失败：{exc}")
+            return
+        self._dismiss_update_popup(popup)
+        self._append_log(f"已忽略版本：{tag}")
+
+    def _show_update_popup(self, tag: str, url: str) -> None:
+        if not tag or self.settings.ignored_update_tag == tag:
+            return
+        existing = self.update_popup
+        if existing is not None:
+            try:
+                if existing.winfo_exists() and self.update_popup_tag == tag:
+                    existing.lift()
+                    return
+            except tk.TclError:
+                pass
+            self._destroy_update_popup()
+
+        popup = tk.Toplevel(self.root)
+        self.update_popup = popup
+        self.update_popup_tag = tag
+        popup.title(self.tr("发现新版本"))
+        popup.configure(background=PANEL)
+        popup.resizable(False, False)
+        popup.transient(self.root)
+        popup.protocol("WM_DELETE_WINDOW", lambda: self._dismiss_update_popup(popup))
+
+        body = tk.Frame(popup, bg=PANEL)
+        body.pack(fill="both", expand=True, padx=26, pady=22)
+        tk.Label(
+            body,
+            text=self.tr("发现新版本"),
+            bg=PANEL,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 15, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            body,
+            text=self.tr(f"当前版本：v{__version__}\n最新版本：{tag}"),
+            justify="left",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 10),
+        ).pack(anchor="w", pady=(10, 18))
+        tk.Label(
+            body,
+            text=self.tr("更新是可选的，可以关闭此窗口；忽略后本版本不再提醒。"),
+            justify="left",
+            wraplength=360,
+            bg=PANEL,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(anchor="w", pady=(0, 18))
+        buttons = tk.Frame(body, bg=PANEL)
+        buttons.pack(fill="x")
+        RoundedButton(
+            buttons,
+            text=self.tr("打开 Release"),
+            command=lambda: self._open_update_release(popup, url),
+            variant="primary",
+            width=122,
+        ).pack(side="left")
+        RoundedButton(
+            buttons,
+            text=self.tr("忽略此版本"),
+            command=lambda: self._ignore_update_version(popup, tag),
+            variant="secondary",
+            width=122,
+        ).pack(side="left", padx=(8, 0))
+        RoundedButton(
+            buttons,
+            text=self.tr("关闭"),
+            command=lambda: self._dismiss_update_popup(popup),
+            variant="secondary",
+            width=86,
+        ).pack(side="right")
+
+        popup.update_idletasks()
+        width = popup.winfo_width()
+        height = popup.winfo_height()
+        x = self.root.winfo_x() + max(0, (self.root.winfo_width() - width) // 2)
+        y = self.root.winfo_y() + max(0, (self.root.winfo_height() - height) // 2)
+        popup.geometry(f"+{x}+{y}")
+        popup.lift()
+        popup.focus_force()
+
     def _enqueue_event(self, kind: str, data: dict[str, Any]) -> None:
         self.events.put((kind, data))
 
@@ -1570,12 +1751,19 @@ class HeartRateBridgeApp:
         if kind == "update_result":
             tag = str(data.get("tag", ""))
             if is_newer_version(tag, __version__):
-                self.latest_release_url = str(data.get("url", ""))
-                self.update_text.set(f"发现新版本 {tag} · 点击打开")
-                self._append_log(f"GitHub 有新版本：{tag}")
+                if tag == self.settings.ignored_update_tag:
+                    self.latest_release_url = ""
+                    self.update_text.set(f"已忽略版本 {tag}")
+                    self._destroy_update_popup()
+                else:
+                    self.latest_release_url = str(data.get("url", ""))
+                    self.update_text.set(f"发现新版本 {tag} · 点击打开")
+                    self._append_log(f"GitHub 有新版本：{tag}")
+                    self._show_update_popup(tag, self.latest_release_url)
             else:
                 self.latest_release_url = ""
                 self.update_text.set(f"已是最新版 {__version__}")
+                self._destroy_update_popup()
             return
         if kind == "update_error":
             self.update_text.set("更新检查失败 · 点击重试")
@@ -1668,6 +1856,32 @@ class HeartRateBridgeApp:
         except OSError as exc:
             self._append_log(f"保存设置失败：{exc}")
 
+    def _change_relay_interval(self, _event: tk.Event | None = None) -> None:
+        seconds = self.relay_interval_seconds_by_label.get(self.relay_interval_choice.get())
+        if seconds is None:
+            return
+        seconds = normalize_relay_interval(seconds)
+        previous_seconds = self.settings.relay_interval_seconds
+        previous_updated = self.settings.relay_interval_updated_epoch_millis
+        if seconds == previous_seconds:
+            return
+        updated = max(int(time.time() * 1_000), previous_updated + 1)
+        self.settings.relay_interval_seconds = seconds
+        self.settings.relay_interval_updated_epoch_millis = updated
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self.settings.relay_interval_seconds = previous_seconds
+            self.settings.relay_interval_updated_epoch_millis = previous_updated
+            self.relay_interval_choice.set(self.relay_interval_labels[previous_seconds])
+            self._show_error("发送频率", f"保存设置失败：{exc}")
+            return
+        if self.runtime is not None:
+            self.runtime.set_relay_interval(seconds, updated)
+        self._append_log(
+            f"发送频率已切换为每 {seconds} 秒；下一份手机数据的 ACK 将同步手机和手表"
+        )
+
     def _append_log(self, line: str) -> None:
         localized = self.tr(line)
         self.app_log.info(localized)
@@ -1719,6 +1933,7 @@ class HeartRateBridgeApp:
         self._shutdown()
 
     def _shutdown(self) -> None:
+        self._destroy_update_popup()
         self.diagnostic_csv.stop()
         self.ble_client.stop()
         runtime, self.runtime = self.runtime, None
@@ -1739,15 +1954,7 @@ def parse_port(value: str) -> int:
 
 
 def local_ipv4_addresses() -> list[str]:
-    addresses: set[str] = set()
-    try:
-        for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            address = item[4][0]
-            if not address.startswith("127."):
-                addresses.add(address)
-    except OSError:
-        pass
-    return sorted(addresses) or ["--"]
+    return discover_local_ipv4_addresses()
 
 
 def _resource_path(name: str) -> str:

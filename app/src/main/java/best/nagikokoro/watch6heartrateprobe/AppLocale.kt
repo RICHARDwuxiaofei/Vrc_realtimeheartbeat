@@ -74,6 +74,8 @@ internal object WatchTranslations {
         "正在等待心率" to Translation("Waiting for heart rate", "心拍数を待機中"),
         "心率信号暂时中断" to Translation("Heart rate signal interrupted", "心拍信号が一時中断"),
         "后台传输中" to Translation("Relaying in background", "バックグラウンドで転送中"),
+        "检测到充电，已停止" to Translation("Stopped because charging was detected", "充電を検出したため停止しました"),
+        "超过五分钟没有心率，已停止" to Translation("Stopped after more than five minutes without heart rate", "5分を超えて心拍数がないため停止しました"),
         "手机" to Translation("Phone", "スマートフォン"),
         "等待连接" to Translation("Waiting for connection", "接続待機中"),
         "数据" to Translation("Data", "データ"),

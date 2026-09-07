@@ -99,6 +99,7 @@ object PhoneRelayRepository {
 
     fun setHeartRateSource(source: HeartRateSource) {
         val context = appContext ?: return
+        PhoneHeartRateNotification.clear(context)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
             putString("heartRateSource", source.wireName)
         }
@@ -331,6 +332,9 @@ object PhoneRelayRepository {
                 },
                 lastError = "--",
             )
+        }
+        if (bpm != null) {
+            PhoneHeartRateNotification.publish(context, bpm, HeartRateSource.GALAXY_WATCH)
         }
         val isRealHeartRate = json.optString("type") == "heart_rate"
         syncDiagnosticModeToWatch(context, sourceNodeId, diagnosticMode)
@@ -630,6 +634,23 @@ object PhoneRelayRepository {
                     }
                     if (nodeId != null) syncDiagnosticModeToWatch(context, nodeId, requestedMode)
                 }
+                val requestedInterval = ack.optInt("relayIntervalSeconds", 0)
+                if (pcAck && requestedInterval in SyncedRelayInterval.supported) {
+                    val nodeId = if (mutableState.value.heartRateSource == HeartRateSource.GALAXY_WATCH) {
+                        request.watchNodeId ?: mutableState.value.watchNodeId.takeUnless { it == "--" }
+                    } else {
+                        null
+                    }
+                    reconcileRelayInterval(
+                        context = context,
+                        nodeId = nodeId,
+                        remoteIntervalSeconds = requestedInterval,
+                        remoteUpdatedEpochMillis = ack.optLong(
+                            "relayIntervalUpdatedEpochMillis",
+                            0L,
+                        ).coerceAtLeast(0L),
+                    )
+                }
                 if (mutableState.value.diagnosticMode || request.diagnostic) {
                     Log.i(TAG, "PC acknowledgement sequence=$sequence matched=$pcAck")
                 }
@@ -724,7 +745,7 @@ object PhoneRelayRepository {
 
     private fun reconcileRelayInterval(
         context: Context,
-        nodeId: String,
+        nodeId: String?,
         remoteIntervalSeconds: Int,
         remoteUpdatedEpochMillis: Long,
     ) {
@@ -740,6 +761,7 @@ object PhoneRelayRepository {
         ) {
             RelayIntervalDecision.APPLY_REMOTE -> {
                 applyForwardInterval(context, remoteInterval, remoteUpdatedEpochMillis)
+                syncRelayIntervalToWatch(context, nodeId)
             }
             RelayIntervalDecision.SEND_LOCAL -> {
                 syncRelayIntervalToWatch(context, nodeId)

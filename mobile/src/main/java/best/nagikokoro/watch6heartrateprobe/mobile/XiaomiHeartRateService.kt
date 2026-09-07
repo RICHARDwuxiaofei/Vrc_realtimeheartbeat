@@ -22,6 +22,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import best.nagikokoro.watch6heartrateprobe.R
@@ -44,6 +45,7 @@ class XiaomiHeartRateService : Service() {
     private var reconnectAddress: String? = null
     private var reconnectName: String? = null
     private var reconnectTicket = 0L
+    private var lastHeartRateNotificationElapsedMillis = Long.MIN_VALUE
     private val intentionallyClosedGatts = Collections.newSetFromMap(
         ConcurrentHashMap<BluetoothGatt, Boolean>(),
     )
@@ -328,7 +330,11 @@ class XiaomiHeartRateService : Service() {
             name = reconnectName ?: "小米手环",
             bpm = bpm,
         )
-        updateNotification("实时心率 $bpm BPM")
+        val now = SystemClock.elapsedRealtime()
+        if (PhoneHeartRateNotificationPolicy.shouldUpdate(lastHeartRateNotificationElapsedMillis, now)) {
+            lastHeartRateNotificationElapsedMillis = now
+            updateNotification("实时心率 $bpm BPM")
+        }
     }
 
     private fun scheduleReconnect() {

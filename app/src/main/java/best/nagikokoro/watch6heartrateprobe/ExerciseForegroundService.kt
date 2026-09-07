@@ -78,6 +78,7 @@ class ExerciseForegroundService : Service() {
     private var lastRelayedBpm: Int? = null
     private var lastWatchAckRequestedSampleEpochMillis = 0L
     private var lastBatteryRefreshMillis = 0L
+    private var activeSessionStartedMillis = 0L
     private var activeRelayMode = WatchRelayMode.POWER_SAVER_5_SECONDS
 
     private val directHeartRateListener = object : SensorEventListener {
@@ -351,6 +352,15 @@ class ExerciseForegroundService : Service() {
                 "flags" to flags,
             ),
         )
+        if (isBatteryCharging() == true && intent?.action != ACTION_STOP) {
+            logger.warn(
+                "EXERCISE_AUTO_STOP_CHARGING",
+                "Charging was detected; stopping the heart-rate session",
+                serviceFields("CHARGING_DETECTED"),
+            )
+            requestEnd(WatchSessionWatchdog.CHARGING_STOP_REASON)
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_STOP -> requestEnd(intent.getStringExtra(EXTRA_REASON) ?: "USER")
             ACTION_START -> startOrRestore(explicitStart = true)
@@ -491,6 +501,7 @@ class ExerciseForegroundService : Service() {
         )
 
         val startTime = System.currentTimeMillis()
+        activeSessionStartedMillis = startTime
         val battery = batteryPercent()
         store.update {
             ExerciseSessionSnapshot(
@@ -537,6 +548,8 @@ class ExerciseForegroundService : Service() {
     }
 
     private suspend fun restoreOwnedExercise(current: ExerciseInfo) {
+        val now = System.currentTimeMillis()
+        activeSessionStartedMillis = store.state.value.sessionStartMillis ?: now
         activeRelayMode = store.state.value.relayMode
         val supportedBatchingModes = exerciseClient.getCapabilities().supportedBatchingModeOverrides
         val fiveSecondBatchingSupported = BatchingMode.HEART_RATE_5_SECONDS in supportedBatchingModes
@@ -554,6 +567,7 @@ class ExerciseForegroundService : Service() {
                 serviceRunning = true,
                 sessionState = ExerciseSessionState.ACTIVE,
                 exerciseType = current.exerciseType.name,
+                sessionStartMillis = it.sessionStartMillis ?: activeSessionStartedMillis,
                 sessionEndMillis = null,
                 currentBatteryPercent = batteryPercent(),
                 screenInteractive = isScreenInteractive(),
@@ -695,12 +709,35 @@ class ExerciseForegroundService : Service() {
                     ExerciseSessionState.PAUSED,
                 )
             ) {
-                updateRealtimeRelayMode()
                 val snapshot = store.state.value
-                val ageMillis = snapshot.lastSampleMillis?.let {
-                    (System.currentTimeMillis() - it).coerceAtLeast(0)
-                }
                 val now = System.currentTimeMillis()
+                val ageMillis = (snapshot.lastSampleMillis ?: snapshot.sessionStartMillis ?: activeSessionStartedMillis)
+                    .takeIf { it > 0L }
+                    ?.let { (now - it).coerceAtLeast(0L) }
+                val automaticStopReason = WatchSessionWatchdog.stopReason(
+                    charging = isBatteryCharging(),
+                    lastSampleMillis = snapshot.lastSampleMillis,
+                    sessionStartMillis = snapshot.sessionStartMillis ?: activeSessionStartedMillis,
+                    nowMillis = now,
+                )
+                if (automaticStopReason != null) {
+                    logger.warn(
+                        if (automaticStopReason == WatchSessionWatchdog.CHARGING_STOP_REASON) {
+                            "EXERCISE_AUTO_STOP_CHARGING"
+                        } else {
+                            "EXERCISE_AUTO_STOP_NO_HEART_RATE"
+                        },
+                        "Stopping the heart-rate session automatically",
+                        serviceFields("AUTO_STOP") + mapOf(
+                            "reason" to automaticStopReason,
+                            "dataAgeMillis" to ageMillis,
+                            "timeoutMillis" to WatchSessionWatchdog.NO_HEART_RATE_TIMEOUT_MILLIS,
+                        ),
+                    )
+                    requestEnd(automaticStopReason)
+                    break
+                }
+                updateRealtimeRelayMode()
                 if (snapshot.currentBatteryPercent == null ||
                     now - lastBatteryRefreshMillis >= BATTERY_REFRESH_INTERVAL_MILLIS
                 ) {

@@ -17,7 +17,16 @@ def test_udp_runtime_returns_matching_ack_and_reports_packet():
         if kind == "packet":
             received.set()
 
-    runtime = BridgeRuntime(RuntimeConfig(listen_host="127.0.0.1", listen_port=0, forward_osc=False), on_event)
+    runtime = BridgeRuntime(
+        RuntimeConfig(
+            listen_host="127.0.0.1",
+            listen_port=0,
+            forward_osc=False,
+            relay_interval_seconds=10,
+            relay_interval_updated_epoch_millis=8_000,
+        ),
+        on_event,
+    )
     runtime.start()
     try:
         client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -30,6 +39,8 @@ def test_udp_runtime_returns_matching_ack_and_reports_packet():
         ack_payload = json.loads(ack)
         assert ack_payload["sequence"] == 77
         assert ack_payload["diagnosticMode"] is False
+        assert ack_payload["relayIntervalSeconds"] == 10
+        assert ack_payload["relayIntervalUpdatedEpochMillis"] == 8_000
         assert received.wait(2)
         packet_event = next(data for kind, data in events if kind == "packet")
         assert packet_event["packet"].bpm == 72

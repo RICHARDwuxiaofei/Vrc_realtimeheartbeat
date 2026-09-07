@@ -21,8 +21,9 @@ fun Context.isBatteryCharging(): Boolean? {
     val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return null
     val status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
     val plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
-    return plugged != 0 || status == BatteryManager.BATTERY_STATUS_CHARGING ||
-        status == BatteryManager.BATTERY_STATUS_FULL
+    // FULL can also be reported after the cable is removed; only a plugged
+    // source or an explicit charging state means that the watch is charging.
+    return plugged != 0 || status == BatteryManager.BATTERY_STATUS_CHARGING
 }
 
 fun runtimeDiagnosticFields(

@@ -9,11 +9,18 @@ from .input_sources import PHONE_RELAY, normalize_input_source
 from .i18n import SYSTEM, normalize_language
 
 
+RELAY_INTERVAL_OPTIONS = (1, 5, 10)
+DEFAULT_RELAY_INTERVAL_SECONDS = 5
+
+
 @dataclass(slots=True)
 class AppSettings:
     listen_port: int = 9123
     osc_port: int = 9000
     forward_osc: bool = True
+    relay_interval_seconds: int = DEFAULT_RELAY_INTERVAL_SECONDS
+    relay_interval_updated_epoch_millis: int = 0
+    ignored_update_tag: str = ""
     input_source: str = PHONE_RELAY
     ble_address: str = ""
     ble_name: str = ""
@@ -36,6 +43,12 @@ def load_settings(path: Path | None = None) -> AppSettings:
             listen_port=_port(payload.get("listen_port"), 9123),
             osc_port=_port(payload.get("osc_port"), 9000),
             forward_osc=bool(payload.get("forward_osc", True)),
+            relay_interval_seconds=normalize_relay_interval(payload.get("relay_interval_seconds")),
+            relay_interval_updated_epoch_millis=_non_negative_int(
+                payload.get("relay_interval_updated_epoch_millis"),
+                0,
+            ),
+            ignored_update_tag=_safe_text(payload.get("ignored_update_tag")),
             input_source=normalize_input_source(payload.get("input_source")),
             ble_address=_safe_text(payload.get("ble_address")),
             ble_name=_safe_text(payload.get("ble_name")),
@@ -57,3 +70,17 @@ def _port(value: object, default: int) -> int:
 
 def _safe_text(value: object) -> str:
     return value.strip()[:200] if isinstance(value, str) else ""
+
+
+def normalize_relay_interval(value: object, default: int = DEFAULT_RELAY_INTERVAL_SECONDS) -> int:
+    if type(value) is not int:
+        return default
+    if value <= 1:
+        return 1
+    if value <= 5:
+        return 5
+    return 10
+
+
+def _non_negative_int(value: object, default: int) -> int:
+    return value if type(value) is int and value >= 0 else default
